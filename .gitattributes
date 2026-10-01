@@ -1,0 +1,47 @@
+# 统一行尾与文本处理，避免 Windows/Linux 协作时产生无意义的整文件差异
+#
+# 约定：
+#   - 默认按文本处理并统一为 LF 入库；
+#   - .ps1 / .bat 必须保持 CRLF：Windows PowerShell 5.1 对 LF+BOM 的解析不稳定，
+#     且 .bat 在 LF 下可能出现命令粘连；
+#   - 二进制文件不做任何转换。
+
+* text=auto eol=lf
+
+# Windows 脚本：入库与检出都用 CRLF
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 明确按文本处理（便于 diff 与统一行尾）
+*.py   text
+*.ts   text
+*.vue  text
+*.md   text
+*.json text
+*.yml  text
+*.yaml text
+*.sh   text eol=lf
+*.sql  text
+*.conf text
+*.html text
+*.css  text
+
+# 二进制：不做行尾转换
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.docx binary
+*.xlsx binary
+*.pptx binary
+*.faiss binary
+*.pkl  binary
+*.zip  binary
+*.gz   binary
+
+# 语言统计时不计入
+package-lock.json linguist-generated=true
+*.md              linguist-documentation=true

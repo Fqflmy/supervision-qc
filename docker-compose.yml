@@ -1,0 +1,17 @@
+# 一键启动入口（在项目根目录执行）
+#
+#   docker compose up -d              启动全部服务（含自动数据初始化）
+#   docker compose ps                 查看状态
+#   docker compose logs -f api        查看后端日志
+#   docker compose down               停止（保留数据卷）
+#
+# 数据初始化不需要额外命令：api 容器入口会幂等地写入示例规范并建立向量索引。
+# 真正的服务定义在 deploy/docker-compose.yml，这里通过 include 复用，避免重复维护。
+# 需要改配置时编辑 deploy/.env（可从 deploy/.env.example 复制）。
+#
+# 推荐直接用一键脚本：.\start.ps1（Windows）或 ./start.sh（Linux/macOS）
+
+name: supervision-qc
+
+include:
+  - path: deploy/docker-compose.yml

@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 后端测试（pytest）
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: supervision
+          POSTGRES_PASSWORD: supervision
+          POSTGRES_DB: supervision
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U supervision -d supervision"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+
+      neo4j:
+        image: neo4j:5.20.0
+        env:
+          NEO4J_AUTH: neo4j/supervision123
+        ports: ["7687:7687", "7474:7474"]
+        options: >-
+          --health-cmd "wget -qO- http://localhost:7474/ >/dev/null 2>&1 || exit 1"
+          --health-interval 10s --health-timeout 5s --health-retries 30
+
+    env:
+      SUPERVISION_DATABASE_URL: postgresql+psycopg://supervision:supervision@127.0.0.1:5432/supervision
+      SUPERVISION_NEO4J_URI: bolt://127.0.0.1:7687
+      SUPERVISION_NEO4J_PASSWORD: supervision123
+      SUPERVISION_LLM_PROVIDER: fake
+      SUPERVISION_EMBEDDING_PROVIDER: hash
+      SUPERVISION_RERANKER_PROVIDER: score_fusion
+      SUPERVISION_LOG_LEVEL: ERROR
+      SUPERVISION_JWT_SECRET: ci-secret-not-for-production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: 安装依赖
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          # CI 不需要本地大模型与 OCR，去掉重型依赖以加速
+          grep -v -E "^(sentence-transformers|FlagEmbedding)" requirements.txt > requirements-ci.txt
+          pip install -r requirements-ci.txt
+
+      - name: 写入示例规范并建立索引
+        working-directory: backend
+        run: python scripts/seed_data.py
+
+      - name: 单元 + 集成测试
+        working-directory: backend
+        run: python -m pytest -q --tb=short
+
+      - name: 路由与 OpenAPI 契约校验
+        working-directory: backend
+        run: python scripts/smoke_api.py
+
+      - name: 全链路端到端（14 步）
+        working-directory: backend
+        run: python scripts/e2e_check.py
+
+      - name: 图谱自检
+        working-directory: backend
+        env:
+          SUPERVISION_NEO4J_ENABLED: "true"
+        run: python scripts/smoke_graph.py
+
+  frontend:
+    name: 前端类型检查与构建
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装依赖
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: 类型检查
+        working-directory: frontend
+        run: npx vue-tsc --noEmit
+
+      - name: 生产构建
+        working-directory: frontend
+        run: npm run build
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 7
+
+  compose-validate:
+    name: Compose 编排校验
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 校验 compose 文件语法
+        working-directory: deploy
+        run: |
+          cp .env.example .env
+          docker compose -f docker-compose.yml config -q
+          docker compose -f docker-compose-infra.yml config -q

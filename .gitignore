@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+# pytest 在无法写入默认缓存目录时会在仓库内创建临时缓存目录（Windows 权限受限时常见）
+.pytest-cache-files-*/
+pytest-cache-files-*/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# 运行期数据（原始文件、索引、模型、日志）
+var/
+!var/.gitkeep
+logs/
+*.log
+backend/pip-tmp/
+backend/esbuild-tmp/
+
+# 前端
+node_modules/
+frontend/dist/
+frontend/.npm-cache/
+frontend/.npm-global/
+frontend/.vite/
+*.local
+
+# 环境变量与密钥
+.env
+.env.*
+!.env.example
+!frontend/.env.development
+
+# 部署数据卷
+deploy/data/
+
+# Docker 构建上下文排除文件（保留在仓库中，不受忽略规则影响）
+!.dockerignore
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

@@ -1,0 +1,650 @@
+# -*- coding: utf-8 -*-
+"""评估任务执行器：驱动 LangGraph 工作流并把结果落库（SRS FR-AGT-08/13）。
+
+- 检查点：PostgreSQL（langgraph-checkpoint-postgres）优先，不可用时降级 InMemorySaver，
+  降级会在返回结果中标注，不静默失真；
+- 结果：eval_task 状态、eval_subtask、match_result、agent_step_log、eval_report 全部落库；
+- 断点续跑：同一 thread_id 恢复，守卫计数器沿用不重置（避免绕过上限）。
+"""
+from __future__ import annotations
+
+import asyncio
+import sys
+import time
+import uuid
+from typing import Any, Optional
+
+from sqlalchemy.orm import Session
+
+from app.agent.graph import AgentContext, AgentState, agent_context, get_agent_graph
+from app.agent.guards import ConvergenceGuard, GuardPolicy
+from app.agent.state import StateMachine, TaskState
+from app.config import settings
+from app.constants import AgentStep, EvalState
+from app.core.logging_conf import get_logger
+from app.db import utcnow
+from app.db.models import (
+    AgentStepLog,
+    EvalReport,
+    EvalSubtask,
+    EvalTask,
+    MatchResult,
+)
+from app.llm.gateway import current_usage, start_usage_session
+from app.retrieval.pipeline import RetrievalPipeline
+
+logger = get_logger(__name__)
+
+_saver_cache: dict[str, Any] = {}
+_saver_keepalive: dict[str, Any] = {}
+_saver_loop: dict[str, Any] = {}
+
+
+async def _checkpoint_schema_ready(pool) -> bool:
+    """探测检查点表结构是否已就绪（无需执行 DDL）。
+
+    背景（真实踩坑）：``AsyncPostgresSaver.setup()`` 会执行
+
+        CREATE INDEX CONCURRENTLY IF NOT EXISTS checkpoints_thread_id_idx ...
+
+    而 ``CREATE INDEX CONCURRENTLY`` **不能回滚，且必须等待所有并发事务结束**。
+    容器化部署里只要还有别的连接处于 ``idle in transaction``（例如一个未及时
+    关闭的 SQLAlchemy 会话），这条语句就会永久等待；多个重试连接再叠加上去，
+    便形成锁死——检索/Agent 全部挂起，直到连接被强制清理。
+
+    因此这里先只读探测迁移表与迁移数量：已全部应用就直接跳过 setup。
+    """
+    try:
+        from langgraph.checkpoint.postgres.base import BasePostgresSaver
+
+        total = len(getattr(BasePostgresSaver, "MIGRATIONS", []) or [])
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT count(*) FROM checkpoint_migrations")
+                row = await cur.fetchone()
+        applied = int(row[0]) if row else 0
+        if total and applied >= total:
+            return True
+        logger.info(
+            "检查点迁移未完成，将执行 setup()",
+            extra={"applied": applied, "total": total},
+        )
+        return False
+    except Exception:  # noqa: BLE001 - 表不存在或探测失败 => 需要 setup
+        return False
+
+
+async def _build_async_postgres_saver():
+    """构建异步 PostgreSQL 检查点。
+
+    Windows 默认事件循环是 ProactorEventLoop，psycopg 异步模式不支持，因此先尝试
+    切换为 SelectorEventLoop（必须发生在事件循环创建之前）。
+    """
+    _ensure_selector_event_loop_policy()
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from psycopg_pool import AsyncConnectionPool
+
+    # 显式自建连接池（而非 from_conn_string），以便：
+    # 1) 设置 idle_in_transaction_session_timeout —— 避免长事务阻塞
+    #    CREATE INDEX CONCURRENTLY 造成锁死（见 _checkpoint_schema_ready 说明）；
+    # 2) 设置 statement_timeout —— 任何语句卡死都能自行超时返回，而不是无限等待。
+    pool = AsyncConnectionPool(
+        conninfo=_psycopg_dsn(),
+        min_size=1,
+        max_size=8,
+        kwargs={
+            "autocommit": True,
+            "prepare_threshold": 0,
+            # 只设空闲事务超时（防止长事务拖住 DDL）；**不设 statement_timeout**，
+            # 因为一次评估任务可能持续数分钟，检查点写入会被误杀
+            # （曾把 statement_timeout 设为 120s，导致 Agent 跑到一半降级为内存检查点）。
+            "options": "-c idle_in_transaction_session_timeout=60000",
+        },
+        open=False,
+        timeout=30,
+    )
+    await pool.open(wait=True, timeout=max(15, settings.db_connect_timeout or 10))
+
+    saver = AsyncPostgresSaver(pool)
+    if not await _checkpoint_schema_ready(pool):
+        # 仅在迁移缺失时才跑 DDL；并加超时兜底，绝不允许无限挂起
+        await asyncio.wait_for(saver.setup(), timeout=180)
+    else:
+        logger.info("检查点表结构已就绪，跳过 setup()（避免 CREATE INDEX CONCURRENTLY 锁等待）")
+
+    _saver_keepalive["actx"] = pool
+    _saver_loop["loop"] = asyncio.get_running_loop()
+    return saver
+
+
+def _ensure_selector_event_loop_policy() -> None:
+    """Windows 上把事件循环策略切到 Selector，供 psycopg 异步连接使用。
+
+    必须在事件循环创建前调用；如果当前已有运行中的 Proactor 循环，则无法切换，
+    此时调用方会降级为内存检查点（并给出明确日志）。
+    """
+    if sys.platform != "win32":
+        return
+    if type(asyncio.get_event_loop_policy()) is asyncio.WindowsSelectorEventLoopPolicy:
+        return
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        logger.info("Windows 事件循环策略已切换为 SelectorEventLoop（psycopg 异步需要）")
+        return
+    logger.warning(
+        "当前已是 ProactorEventLoop，无法切换为 SelectorEventLoop，"
+        "PostgreSQL 检查点不可用（改用内存检查点或设置 SUPERVISION_CHECKPOINT_BACKEND）"
+    )
+
+
+async def get_checkpointer_async(prefer: Optional[str] = None) -> tuple[Any, str]:
+    """异步版检查点选择（Agent 是异步图，必须用异步 saver）。"""
+    backend = (prefer or settings.checkpoint_backend or "auto").lower()
+    if backend == "memory" or settings.is_sqlite:
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        return InMemorySaver(), "memory"
+
+    if backend in {"auto", "postgres"}:
+        key = "postgres"
+        cached = _saver_cache.get(key)
+        if cached is not None and _saver_loop.get("loop") is asyncio.get_running_loop():
+            return cached, key
+        if cached is not None:
+            # 事件循环已变化，丢弃旧 saver（连接池不可跨循环复用）
+            _saver_cache.pop(key, None)
+            _saver_keepalive.pop("actx", None)
+        try:
+            saver = await _build_async_postgres_saver()
+            _saver_cache[key] = saver
+            logger.info("LangGraph 检查点使用 PostgreSQL 持久化（异步）")
+            return saver, key
+        except Exception as exc:  # noqa: BLE001
+            if backend == "postgres":
+                raise
+            logger.warning(
+                "PostgreSQL 检查点不可用，降级为内存检查点（重启后无法续跑）",
+                extra={"error": f"{type(exc).__name__}: {str(exc)[:200]}"},
+            )
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    return InMemorySaver(), "memory"
+
+
+def get_checkpointer(prefer: Optional[str] = None) -> tuple[Any, str]:
+    """同步场景（脚本/诊断）使用的检查点选择。"""
+    backend = (prefer or settings.checkpoint_backend or "auto").lower()
+    if backend == "memory" or settings.is_sqlite:
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        return InMemorySaver(), "memory"
+    if backend in {"auto", "postgres"}:
+        try:
+            from langgraph.checkpoint.postgres import PostgresSaver
+
+            # 与异步版本一致：显式连接池 + 事务/语句超时，避免 setup() 的
+            # CREATE INDEX CONCURRENTLY 被长事务阻塞而无限等待
+            from psycopg_pool import ConnectionPool
+
+            pool = ConnectionPool(
+                conninfo=_psycopg_dsn(),
+                min_size=1,
+                max_size=4,
+                kwargs={
+                    "autocommit": True,
+                    "prepare_threshold": 0,
+                    "options": "-c idle_in_transaction_session_timeout=60000",
+                },
+                open=False,
+                timeout=30,
+            )
+            pool.open(wait=True, timeout=max(15, settings.db_connect_timeout or 10))
+            saver = PostgresSaver(pool)
+            if not _checkpoint_schema_ready_sync(pool):
+                saver.setup()
+            else:
+                logger.info("检查点表结构已就绪，跳过 setup()（同步）")
+            _saver_keepalive["sctx"] = pool
+            return saver, "postgres"
+        except Exception as exc:  # noqa: BLE001
+            if backend == "postgres":
+                raise
+            logger.warning(
+                "PostgreSQL 检查点不可用，降级为内存检查点",
+                extra={"error": f"{type(exc).__name__}: {str(exc)[:200]}"},
+            )
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    return InMemorySaver(), "memory"
+
+
+def _psycopg_dsn() -> str:
+    """把 SQLAlchemy URL 转成 psycopg 连接串。"""
+    url = settings.database_url
+    url = url.replace("postgresql+psycopg://", "postgresql://")
+    url = url.replace("postgresql+asyncpg://", "postgresql://")
+    return url
+
+
+def _checkpoint_schema_ready_sync(pool) -> bool:
+    """同步版：探测检查点迁移是否已全部应用（原因见异步版同名函数）。"""
+    try:
+        from langgraph.checkpoint.postgres.base import BasePostgresSaver
+
+        total = len(getattr(BasePostgresSaver, "MIGRATIONS", []) or [])
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT count(*) FROM checkpoint_migrations")
+                row = cur.fetchone()
+        applied = int(row[0]) if row else 0
+        return bool(total) and applied >= total
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _restore_guard_state(snapshot: Optional[dict]) -> ConvergenceGuard:
+    """从历史快照恢复守卫状态：计数器沿用不重置（SRS 4.4）。"""
+    policy = GuardPolicy()
+    guard = ConvergenceGuard(policy)
+    snapshot = snapshot or {}
+    guard.iteration_count = int(snapshot.get("iteration_count") or 0)
+    guard.no_progress_rounds = int(snapshot.get("no_progress_rounds") or 0)
+    guard.token_used = int(snapshot.get("token_used") or 0)
+    return guard
+
+
+def _persist_subtasks(session: Session, task_id: uuid.UUID, subtasks: list[dict]) -> None:
+    session.query(EvalSubtask).filter(EvalSubtask.task_id == task_id).delete()
+    for item in subtasks:
+        session.add(
+            EvalSubtask(
+                task_id=task_id,
+                seq=int(item.get("seq") or 0),
+                name=str(item.get("name") or "")[:255],
+                criterion=item.get("criterion"),
+                required_evidence=item.get("required_evidence"),
+                specialty=item.get("specialty"),
+                query=item.get("query"),
+                status="done",
+            )
+        )
+
+
+def _persist_matches(session: Session, task_id: uuid.UUID, matches: list[dict]) -> None:
+    session.query(MatchResult).filter(MatchResult.task_id == task_id).delete()
+    for item in matches:
+        citation = item.get("citation") or {}
+        session.add(
+            MatchResult(
+                task_id=task_id,
+                clause_id=citation.get("chunk_id"),
+                clause_no=item.get("clause_no"),
+                spec_code=item.get("spec_code") or citation.get("spec_code"),
+                spec_name=citation.get("spec_name"),
+                verdict=item.get("verdict") or "insufficient_evidence",
+                confidence=item.get("confidence"),
+                relevance_score=item.get("relevance_score"),
+                evidence=item.get("evidence"),
+                reasoning=item.get("reasoning"),
+                risk_level=item.get("risk_level"),
+                remediation=item.get("remediation"),
+                citation_json=citation or None,
+            )
+        )
+
+
+def _collect_basis(matches: list[dict]) -> list[dict]:
+    """汇总去重后的评估依据清单（用于报告附录与引用校验兜底）。"""
+    basis: list[dict] = []
+    seen: set[str] = set()
+    for match in matches:
+        citation = match.get("citation") or {}
+        if not citation:
+            continue
+        key = f"{citation.get('spec_code')}|{citation.get('clause_no')}|{citation.get('chunk_id')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        location_parts = []
+        if citation.get("chapter_path"):
+            location_parts.append(str(citation["chapter_path"]))
+        if citation.get("page_no"):
+            location_parts.append(f"P{citation['page_no']}")
+        basis.append(
+            {
+                "spec_code": citation.get("spec_code"),
+                "spec_name": citation.get("spec_name"),
+                "clause_no": citation.get("clause_no"),
+                "location": " / ".join(location_parts) or "-",
+                "chunk_id": citation.get("chunk_id"),
+            }
+        )
+    return basis
+
+
+def _persist_report(
+    session: Session,
+    task: EvalTask,
+    report: dict,
+    markdown: str,
+    matches: list[dict],
+    generator_model: str,
+) -> EvalReport:
+    existing = session.query(EvalReport).filter(EvalReport.task_id == task.id).one_or_none()
+    basis_count = len({(m.get("spec_code"), m.get("clause_no")) for m in matches if m.get("clause_no")})
+    non_compliance = sum(
+        1 for m in matches if m.get("verdict") in {"non_compliant", "partial", "insufficient_evidence"}
+    )
+    payload = {
+        "conclusion": report.get("conclusion"),
+        "overall_verdict": report.get("overall_verdict"),
+        "risk_level": report.get("risk_level"),
+        "summary": (report.get("analysis") or {}).get("summary"),
+        "content": {
+            **report,
+            # 关键：把条款比对结果一并存入报告内容。
+            # Judge 的引用校验依赖它逐条确认「引用是否真实存在」，
+            # 缺失时会导致引用校验拿不到任何引用（幻觉识别形同失效）。
+            "matches": list(matches),
+            "evidence_basis": _collect_basis(matches),
+        },
+        "markdown": markdown,
+        "basis_count": basis_count,
+        "non_compliance_count": non_compliance,
+        "generator_model": generator_model,
+    }
+    if existing is None:
+        existing = EvalReport(task_id=task.id, **payload)
+        session.add(existing)
+    else:
+        for key, value in payload.items():
+            setattr(existing, key, value)
+    return existing
+
+
+def _persist_step_logs(session: Session, task_id: uuid.UUID, state: dict, timings: dict[str, int]) -> None:
+    session.query(AgentStepLog).filter(AgentStepLog.task_id == task_id).delete()
+    order = [
+        (AgentStep.PLANNING.value, "planning"),
+        (AgentStep.RETRIEVAL.value, "retrieval"),
+        (AgentStep.MATCHING.value, "clause_matching"),
+        (AgentStep.ANALYSIS.value, "analysis"),
+        (AgentStep.REPORT.value, "report_generation"),
+    ]
+    for seq, (step, key) in enumerate(order, start=1):
+        duration = timings.get(key)
+        if duration is None and step != AgentStep.PLANNING.value:
+            # 守卫提前终止时后续节点未执行
+            status = "skipped"
+        else:
+            status = "done"
+        session.add(
+            AgentStepLog(
+                task_id=task_id,
+                step=step,
+                seq=seq,
+                status=status,
+                duration_ms=duration,
+                iteration=state.get("iteration_count") or 0,
+                output_digest=_digest(step, state),
+            )
+        )
+
+
+def _digest(step: str, state: dict) -> dict:
+    if step == AgentStep.PLANNING.value:
+        return {"subtasks": len(state.get("subtasks") or [])}
+    if step == AgentStep.RETRIEVAL.value:
+        results = state.get("retrieval_results") or {}
+        return {
+            "queries": len(results),
+            "clauses": sum(len((v or {}).get("clauses") or []) for v in results.values()),
+        }
+    if step == AgentStep.MATCHING.value:
+        matches = state.get("matches") or []
+        return {
+            "matches": len(matches),
+            "non_compliant": sum(1 for m in matches if m.get("verdict") == "non_compliant"),
+        }
+    if step == AgentStep.ANALYSIS.value:
+        analysis = state.get("analysis") or {}
+        return {"findings": len(analysis.get("findings") or []), "risk": analysis.get("risk_level")}
+    if step == AgentStep.REPORT.value:
+        return {"has_report": bool(state.get("report")), "markdown_chars": len(state.get("markdown") or "")}
+    return {}
+
+
+async def run_evaluation(
+    session: Session,
+    task: EvalTask,
+    *,
+    resume: bool = False,
+    checkpointer_preference: Optional[str] = None,
+) -> dict[str, Any]:
+    """执行一次评估任务（或从检查点续跑）。"""
+    started = time.perf_counter()
+    payload = dict(task.input_payload or {})
+    options = dict(task.options or {})
+    if task.specialty:
+        payload.setdefault("specialty", task.specialty)
+
+    policy = GuardPolicy.from_options(options)
+    if resume:
+        guard = _restore_guard_state(task.state_snapshot)
+        guard.policy = policy
+    else:
+        guard = ConvergenceGuard(policy)
+    thread_id = task.checkpoint_thread_id or str(task.id)
+    task.checkpoint_thread_id = thread_id
+
+    start_usage_session()
+    saver, backend = await get_checkpointer_async(checkpointer_preference)
+    graph = get_agent_graph(saver, cache_key=f"agent-{backend}")
+    # 未显式指定 namespace 时跨全部分片检索（多知识库），由 kb_ids 在 SQL 层再过滤
+    pipeline = RetrievalPipeline(namespace=options.get("namespace"))
+
+    machine = StateMachine(TaskState(task_id=str(task.id), thread_id=thread_id))
+    if resume and task.state_snapshot:
+        try:
+            machine.state.current_state = EvalState(task.current_state)
+        except ValueError:
+            machine.state.current_state = EvalState.PENDING
+    machine.transition(EvalState.PENDING, enforce=False)
+    machine.transition(EvalState.PLANNING)
+
+    initial: AgentState = {
+        "task_id": str(task.id),
+        "thread_id": thread_id,
+        "payload": payload,
+        "options": options,
+        "subtasks": [],
+        "retrieval_results": {},
+        "matches": [],
+        "analysis": {},
+        "report": {},
+        "iteration_count": guard.iteration_count,
+        "no_progress_rounds": guard.no_progress_rounds,
+        "token_used": guard.token_used,
+        "errors": [],
+        "degraded": False,
+        "started_at": time.time(),
+        "state": {"current_state": EvalState.PLANNING.value},
+    }
+
+    task.started_at = task.started_at or utcnow()
+    ctx = AgentContext(guard=guard, session=session, pipeline=pipeline, timings={})
+
+    final_state: dict[str, Any] = dict(initial)
+    error: Optional[str] = None
+    try:
+        with agent_context(ctx):
+            result = await graph.ainvoke(
+                initial,
+                config={
+                    "configurable": {"thread_id": thread_id},
+                    "recursion_limit": max(25, policy.max_iterations * 4),
+                },
+            )
+        final_state = dict(result or initial)
+    except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
+        logger.error("Agent 执行失败", extra={"task_id": str(task.id), "error": error[:400]})
+        machine.record_error(error_type="agent_execution", message=error)
+        final_state.setdefault("errors", []).append(
+            {"step": "runtime", "type": "exception", "message": error[:500], "fatal": True}
+        )
+
+    usage = current_usage()
+    guard.add_tokens(0)
+
+    # 状态收敛
+    state_info = final_state.get("state") or {}
+    target_name = state_info.get("current_state") or EvalState.FAILED.value
+    if error and target_name not in {EvalState.DEGRADED.value, EvalState.NEED_HUMAN.value}:
+        target_name = EvalState.FAILED.value
+    try:
+        target_state = EvalState(target_name)
+    except ValueError:
+        target_state = EvalState.FAILED
+    from app.constants import STATE_TRANSITIONS
+
+    if target_state not in STATE_TRANSITIONS.get(machine.state.current_state, set()) and target_state != machine.state.current_state:
+        machine.transition(target_state, enforce=False)
+    else:
+        machine.transition(target_state, enforce=False)
+
+    # 落库
+    task.current_state = target_state.value
+    task.current_step = state_info.get("current_step") or task.current_step
+    task.iteration_count = int(final_state.get("iteration_count") or guard.iteration_count)
+    task.no_progress_rounds = int(final_state.get("no_progress_rounds") or guard.no_progress_rounds)
+    task.total_tokens = usage.total_tokens or guard.token_used
+    task.error_state = machine.state.error_state
+    task.guard_reason = state_info.get("guard_reason")
+    task.progress = _progress_of(target_state)
+    task.finished_at = utcnow() if target_state.value in {"COMPLETED", "FAILED", "CANCELLED", "DEGRADED"} else task.finished_at
+
+    machine.state.iteration_count = task.iteration_count
+    machine.state.no_progress_rounds = task.no_progress_rounds
+    machine.state.token_used = task.total_tokens
+    task.state_snapshot = {
+        **machine.state.to_snapshot(),
+        "guard": guard.summary(),
+        "errors": final_state.get("errors") or [],
+        "timings": ctx.timings,
+        "checkpoint_backend": backend,
+    }
+
+    subtasks = final_state.get("subtasks") or []
+    matches = final_state.get("matches") or []
+    if subtasks:
+        _persist_subtasks(session, task.id, subtasks)
+    if matches:
+        _persist_matches(session, task.id, matches)
+    _persist_step_logs(session, task.id, final_state, ctx.timings)
+
+    report_row = None
+    if final_state.get("report"):
+        _markdown = final_state.get("markdown") or ""
+        if not _markdown:
+            logger.error(
+                "报告 markdown 为空，请检查 report_node 输出",
+                extra={
+                    "task_id": str(task.id),
+                    "state_keys": sorted(final_state.keys()),
+                    "report_keys": sorted((final_state.get("report") or {}).keys()),
+                },
+            )
+        report_row = _persist_report(
+            session,
+            task,
+            final_state["report"],
+            _markdown,
+            matches,
+            generator_model=settings.llm_primary_model,
+        )
+
+    session.flush()
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    logger.info(
+        "评估任务执行结束",
+        extra={
+            "task_id": str(task.id),
+            "state": target_state.value,
+            "iterations": task.iteration_count,
+            "no_progress_rounds": task.no_progress_rounds,
+            "matches": len(matches),
+            "tokens": task.total_tokens,
+            "elapsed_ms": elapsed_ms,
+            "checkpoint_backend": backend,
+        },
+    )
+    return {
+        "task_id": str(task.id),
+        "thread_id": thread_id,
+        "current_state": target_state.value,
+        "iteration_count": task.iteration_count,
+        "no_progress_rounds": task.no_progress_rounds,
+        "subtasks": subtasks,
+        "matches": matches,
+        "analysis": final_state.get("analysis") or {},
+        "report": final_state.get("report") or {},
+        "markdown": final_state.get("markdown") or "",
+        "report_id": str(report_row.id) if report_row is not None else None,
+        "guard": guard.summary(),
+        "errors": final_state.get("errors") or [],
+        "token_used": task.total_tokens,
+        "elapsed_ms": elapsed_ms,
+        "checkpoint_backend": backend,
+        "degraded": bool(final_state.get("degraded")),
+    }
+
+
+def _progress_of(state: EvalState) -> float:
+    mapping = {
+        EvalState.PENDING: 0.0,
+        EvalState.PLANNING: 0.15,
+        EvalState.RETRIEVING: 0.35,
+        EvalState.MATCHING: 0.55,
+        EvalState.ANALYZING: 0.75,
+        EvalState.REPORTING: 0.9,
+        EvalState.JUDGING: 0.95,
+        EvalState.COMPLETED: 1.0,
+        EvalState.DEGRADED: 1.0,
+        EvalState.NEED_HUMAN: 0.9,
+        EvalState.FAILED: 1.0,
+        EvalState.CANCELLED: 1.0,
+    }
+    return mapping.get(state, 0.0)
+
+
+async def run_evaluation_async(task_id: uuid.UUID, *, resume: bool = False) -> None:
+    """后台执行入口：自建会话，供队列/后台任务调用。"""
+    from app.db.session import session_scope
+
+    with session_scope() as session:
+        task = session.get(EvalTask, task_id)
+        if task is None:
+            logger.warning("任务不存在，跳过执行", extra={"task_id": str(task_id)})
+            return
+        await run_evaluation(session, task, resume=resume)
+
+
+def submit_background(task_id: uuid.UUID, *, resume: bool = False) -> None:
+    """把任务提交到事件循环后台执行（FR-AGT-12 并发控制由信号量在网关层约束）。"""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(run_evaluation_async(task_id, resume=resume))
+        return
+    loop.create_task(run_evaluation_async(task_id, resume=resume))
+
+
+__all__ = [
+    "run_evaluation",
+    "run_evaluation_async",
+    "submit_background",
+    "get_checkpointer",
+]

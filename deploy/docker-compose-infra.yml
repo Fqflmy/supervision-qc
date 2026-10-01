@@ -1,0 +1,105 @@
+# 数据层开发用编排：只启动 PostgreSQL + Neo4j + Redis，并把端口暴露到宿主，
+# 供「本机跑后端」的开发模式使用（对应 .\start-local.ps1）。
+#
+# 与全栈编排（docker-compose.yml）的关系：
+#   - 镜像、账号、数据卷内容格式保持一致，两种模式可共用同一批数据；
+#   - 这里**不写 container_name**，由 Compose 按项目名自动命名
+#     （例如 supervision-infra-postgres-1），因此与全栈模式的容器名不会冲突，
+#     两种模式可以在同一台机器上共存，不需要先 down 掉对方。
+#   - 卷名也带项目前缀，互不覆盖。
+#
+# 用法：
+#     docker compose -f deploy/docker-compose-infra.yml -p supervision-infra up -d
+#     docker compose -f deploy/docker-compose-infra.yml -p supervision-infra down
+#
+# 若希望开发模式复用全栈模式已有的数据，把下面 volumes 的命名卷改为
+# external 指向全栈的卷即可（见文件末尾注释）。
+
+name: supervision-infra
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-supervision}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-supervision}
+      POSTGRES_DB: ${POSTGRES_DB:-supervision}
+      TZ: Asia/Shanghai
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-supervision} -d ${POSTGRES_DB:-supervision}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=256MB
+
+  neo4j:
+    image: neo4j:5.20.0
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-supervision123}
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512m
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_dbms_security_procedures_allowlist: apoc.*
+      TZ: Asia/Shanghai
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_plugins:/plugins
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474/ >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pg_data:
+  neo4j_data:
+  neo4j_logs:
+  neo4j_plugins:
+  redis_data:
+# 如需复用全栈模式的数据卷（两个模式共享同一份数据），把上面的卷定义替换为：
+# volumes:
+#   pg_data:
+#     external: true
+#     name: supervision-qc_pg_data
+#   neo4j_data:
+#     external: true
+#     name: supervision-qc_neo4j_data
+#   redis_data:
+#     external: true
+#     name: supervision-qc_redis_data
+#   neo4j_logs:
+#   neo4j_plugins:

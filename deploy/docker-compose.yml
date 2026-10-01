@@ -1,0 +1,238 @@
+# 前后端分离的完整编排（SRS 7.7）
+#
+# 说明：应用服务默认使用本机已缓存的镜像标签，避免依赖外网拉取。
+# 启动：docker compose -f docker-compose.yml up -d
+# 仅数据层：docker compose -f docker-compose-infra.yml up -d
+
+name: supervision-qc
+
+services:
+  # --------------------------- 数据层 --------------------------- #
+  postgres:
+    image: postgres:16-alpine
+    container_name: supervision-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-supervision}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-supervision}
+      POSTGRES_DB: ${POSTGRES_DB:-supervision}
+      TZ: Asia/Shanghai
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-supervision} -d ${POSTGRES_DB:-supervision}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [supervision]
+
+  neo4j:
+    image: neo4j:5.20.0
+    container_name: supervision-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-supervision123}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_server_memory_heap_max__size: 1G
+      TZ: Asia/Shanghai
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474/ >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+    networks: [supervision]
+
+  redis:
+    image: redis:7-alpine
+    container_name: supervision-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [supervision]
+
+  minio:
+    image: minio/minio:latest
+    container_name: supervision-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks: [supervision]
+
+  # ------------------------- 模型服务（可选，默认不启动） ------------------------- #
+  # 默认不启动：api 通过 siliconflow 调用托管 Embedding/Reranker，无需本地推理容器。
+  # 需要本地推理时显式启用（会安装 torch 等重型依赖，构建较慢）：
+  #     docker compose --profile local-models up -d
+  # 并把 deploy/.env 的 EMBEDDING_PROVIDER / RERANKER_PROVIDER 改为 http。
+  embedding:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      args:
+        INSTALL_MODELS: "1"
+    container_name: supervision-embedding
+    profiles: ["local-models"]
+    restart: unless-stopped
+    command: ["python", "scripts/serve_embedding.py", "--port", "8510"]
+    environment:
+      SUPERVISION_EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-m3}
+      SUPERVISION_EMBEDDING_DEVICE: ${EMBEDDING_DEVICE:-cpu}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+    volumes:
+      - model_cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8510/health',timeout=3)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 120s
+    networks: [supervision]
+
+  reranker:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      args:
+        INSTALL_MODELS: "1"
+    container_name: supervision-reranker
+    profiles: ["local-models"]
+    restart: unless-stopped
+    command: ["python", "scripts/serve_reranker.py", "--port", "8520"]
+    environment:
+      SUPERVISION_RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
+      SUPERVISION_RERANKER_DEVICE: ${RERANKER_DEVICE:-cpu}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+    volumes:
+      - model_cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8520/health',timeout=3)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 120s
+    networks: [supervision]
+
+  # --------------------------- 应用层 --------------------------- #
+  api:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: supervision-api
+    restart: unless-stopped
+    environment:
+      SUPERVISION_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-supervision}:${POSTGRES_PASSWORD:-supervision}@postgres:5432/${POSTGRES_DB:-supervision}
+      SUPERVISION_NEO4J_URI: bolt://neo4j:7687
+      SUPERVISION_NEO4J_PASSWORD: ${NEO4J_PASSWORD:-supervision123}
+      SUPERVISION_REDIS_URL: redis://redis:6379/0
+      SUPERVISION_STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      SUPERVISION_MINIO_ENDPOINT: minio:9000
+      SUPERVISION_EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-siliconflow}
+      SUPERVISION_EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-m3}
+      SUPERVISION_EMBEDDING_API_BASE_URL: ${EMBEDDING_API_BASE_URL:-https://api.siliconflow.cn/v1}
+      SUPERVISION_EMBEDDING_API_KEY: ${SILICONFLOW_API_KEY:-}
+      SUPERVISION_EMBEDDING_HTTP_URL: http://embedding:8510/embed
+      SUPERVISION_RERANKER_PROVIDER: ${RERANKER_PROVIDER:-siliconflow}
+      SUPERVISION_RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
+      SUPERVISION_RERANKER_API_BASE_URL: ${RERANKER_API_BASE_URL:-https://api.siliconflow.cn/v1}
+      SUPERVISION_RERANKER_API_KEY: ${SILICONFLOW_API_KEY:-}
+      SUPERVISION_RERANKER_HTTP_URL: http://reranker:8520/rerank
+      SUPERVISION_LLM_PROVIDER: ${LLM_PROVIDER:-openai_compatible}
+      SUPERVISION_LLM_PRIMARY_MODEL: ${LLM_PRIMARY_MODEL:-deepseek-chat}
+      SUPERVISION_LLM_PRIMARY_BASE_URL: ${LLM_PRIMARY_BASE_URL:-https://api.deepseek.com/v1}
+      SUPERVISION_LLM_PRIMARY_API_KEY: ${DEEPSEEK_API_KEY:-}
+      SUPERVISION_LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-qwen-plus}
+      SUPERVISION_LLM_FALLBACK_BASE_URL: ${LLM_FALLBACK_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      SUPERVISION_LLM_FALLBACK_API_KEY: ${DASHSCOPE_API_KEY:-}
+      SUPERVISION_JWT_SECRET: ${JWT_SECRET:-please-change-this-secret}
+      SUPERVISION_CORS_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
+      SUPERVISION_LOG_JSON: "true"
+      SUPERVISION_DATA_DIR: /app/var
+      # true=启动时幂等写入示例规范并建立索引；false=只起服务
+      SUPERVISION_AUTO_SEED: ${AUTO_SEED:-true}
+      TZ: Asia/Shanghai
+    volumes:
+      - app_var:/app/var
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health',timeout=5)\""]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    networks: [supervision]
+
+  web:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api/v1
+    container_name: supervision-web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [supervision]
+
+  # --------------------------- 可观测性 --------------------------- #
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: supervision-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom_data:/prometheus
+    networks: [supervision]
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: supervision-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks: [supervision]
+
+networks:
+  supervision:
+    driver: bridge
+
+volumes:
+  pg_data:
+  neo4j_data:
+  neo4j_logs:
+  redis_data:
+  minio_data:
+  model_cache:
+  app_var:
+  prom_data:
+  grafana_data:
