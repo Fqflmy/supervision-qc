@@ -163,7 +163,16 @@ services:
       SUPERVISION_LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-qwen-plus}
       SUPERVISION_LLM_FALLBACK_BASE_URL: ${LLM_FALLBACK_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       SUPERVISION_LLM_FALLBACK_API_KEY: ${DASHSCOPE_API_KEY:-}
-      SUPERVISION_JWT_SECRET: ${JWT_SECRET:-please-change-this-secret}
+      SUPERVISION_JWT_SECRET: ${JWT_SECRET:-}
+      # 必须显式传入：设为 production 时才会启用强制安全校验
+      # （JWT 密钥为占位值/过短/自动生成时拒绝启动）。
+      # 注意 compose 会拦截 deploy/.env 中的变量，不在此声明就传不进容器，
+      # 校验会静默失效 —— 这类"配置写了但没生效"的问题最难排查。
+      SUPERVISION_ENVIRONMENT: ${ENVIRONMENT:-dev}
+      # 默认管理员：上线前设 SEED_DEFAULT_ADMIN=false，或改用强密码
+      SUPERVISION_SEED_DEFAULT_ADMIN: ${SEED_DEFAULT_ADMIN:-true}
+      SUPERVISION_SEED_DEFAULT_ADMIN_PASSWORD: ${SEED_DEFAULT_ADMIN_PASSWORD:-Admin@12345}
+      SUPERVISION_FORCE_PASSWORD_CHANGE_ON_FIRST_LOGIN: ${FORCE_PASSWORD_CHANGE_ON_FIRST_LOGIN:-false}
       SUPERVISION_CORS_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
       SUPERVISION_LOG_JSON: "true"
       SUPERVISION_DATA_DIR: /app/var

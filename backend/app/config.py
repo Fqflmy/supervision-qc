@@ -197,13 +197,26 @@ class Settings(BaseSettings):
     )
 
     # ---------- 安全 ----------
+    #: 登录令牌签名密钥。占位值已随公开模板泄漏，绝不能用于生产；
+    #: 生产环境（environment=production）检测到占位/过短值会拒绝启动，
+    #: 非生产环境会自动生成随机密钥。详见 app/core/security_policy.py。
     jwt_secret: str = "change-me-in-production-please-32bytes-min"
     jwt_algorithm: str = "HS256"
+    #: 运行期标记：密钥是否为开发期自动生成（生产环境据此拒绝启动）
+    jwt_secret_is_generated: bool = False
     access_token_expire_minutes: int = 120
     refresh_token_expire_days: int = 7
+    #: 是否启用刷新令牌（关闭时令牌过期只能重新登录）
+    refresh_token_enabled: bool = False
     password_min_length: int = 8
     login_max_failures: int = 5
     login_lock_minutes: int = 15
+    #: 是否允许写入默认管理员账号（上线前应关闭）
+    seed_default_admin: bool = True
+    #: 默认管理员密码（上线前必须修改；建议用环境变量注入）
+    seed_default_admin_password: str = "Admin@12345"
+    #: 是否强制首次登录修改密码
+    force_password_change_on_first_login: bool = False
     #: 逗号分隔字符串；用 settings.cors_origin_list 取列表
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080"
 
@@ -289,6 +302,14 @@ def get_settings() -> Settings:
     settings = Settings()
     settings.resolve_paths()
     settings.ensure_dirs()
+    # 安全校验：占位密钥在开发环境自动替换为随机值，在生产环境直接拒绝启动。
+    # 放在这里（而非模块导入期）以便脚本也能构造独立的 Settings 实例做单测。
+    from app.core.security_policy import mark_auto_generated, validate_jwt_secret
+
+    original = settings.jwt_secret
+    final = validate_jwt_secret(settings)
+    if final != original:
+        mark_auto_generated(settings, final)
     return settings
 
 

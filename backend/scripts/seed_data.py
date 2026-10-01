@@ -20,6 +20,7 @@ sys.path.insert(0, str(BACKEND))
 
 from sqlalchemy import select  # noqa: E402
 
+from app.config import settings  # noqa: E402
 from app.constants import DocStatus, RegionLevel  # noqa: E402
 from app.core.logging_conf import setup_logging  # noqa: E402
 from app.db import session_scope  # noqa: E402
@@ -171,18 +172,27 @@ async def seed(reset: bool = False) -> int:
         # 基础组织数据
         admin = session.execute(select(User).where(User.username == "admin")).scalars().first()
         if admin is None:
-            from app.core.security import hash_password
+            if not settings.seed_default_admin:
+                print("[跳过] SUPERVISION_SEED_DEFAULT_ADMIN=false，不创建默认管理员账号")
+            else:
+                from app.core.security import hash_password
 
-            admin = User(
-                username="admin",
-                full_name="系统管理员",
-                password_hash=hash_password("Admin@12345"),
-                role="admin",
-                specialties=["结构工程"],
-            )
-            session.add(admin)
-            session.flush()
-            print("[OK] 创建管理员账号 admin / Admin@12345")
+                # 密码来自配置（SUPERVISION_SEED_DEFAULT_ADMIN_PASSWORD），不再硬编码。
+                # 默认值 Admin@12345 已公开在仓库文档中，仅适用于开发/演示环境。
+                admin_password = settings.seed_default_admin_password
+                admin = User(
+                    username="admin",
+                    full_name="系统管理员",
+                    password_hash=hash_password(admin_password),
+                    role="admin",
+                    specialties=["结构工程"],
+                )
+                session.add(admin)
+                session.flush()
+                if admin_password == "Admin@12345":
+                    print("[OK] 创建管理员账号 admin / Admin@12345（默认密码，仅限开发环境，上线前必须修改）")
+                else:
+                    print("[OK] 创建管理员账号 admin（密码取自 SUPERVISION_SEED_DEFAULT_ADMIN_PASSWORD）")
 
         project = session.execute(select(Project).where(Project.code == "DEMO-001")).scalars().first()
         if project is None:
@@ -247,7 +257,8 @@ async def seed(reset: bool = False) -> int:
                 region_level=spec["region_level"],
                 scope=spec["scope"],
                 status=DocStatus.PUBLISHED.value,
-                uploader_id=admin.id,
+                # 关闭默认管理员时 admin 可能不存在，uploader_id 允许为空
+                uploader_id=getattr(admin, "id", None),
             )
             session.add(doc)
             session.flush()

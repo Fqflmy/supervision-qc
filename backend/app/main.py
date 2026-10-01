@@ -35,7 +35,14 @@ if sys.platform == "win32":  # pragma: no cover - 平台相关
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """启动自检：数据库、图谱、模型与索引状态以日志形式显式暴露，避免静默降级。"""
+    from app.core.security_policy import assert_production_safe, auth_security_warnings
     from app.db.session import init_db, ping
+
+    # 安全前置校验：生产环境若使用占位/过短/自动生成的 JWT 密钥，直接拒绝启动。
+    # 该密钥泄漏会导致任何人都能伪造令牌绕过鉴权，因此不允许带病上线。
+    assert_production_safe(settings)
+    for tip in auth_security_warnings(settings):
+        logger.warning("安全提示", extra={"item": tip, "environment": settings.environment})
 
     started = time.perf_counter()
     db_ok = init_db()
