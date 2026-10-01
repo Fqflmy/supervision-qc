@@ -347,17 +347,22 @@ docker compose exec api python scripts/rebuild_index.py   # 换 Embedding 模型
 
 ## 6. 部署与运维注意
 
-- **生产必改**：`SUPERVISION_JWT_SECRET`、数据库/Neo4j 密码、初始管理员密码；
+- **JWT 密钥（强制校验）**：占位密钥曾随公开仓库分发，任何拿到仓库的人都能伪造令牌。
+  现已改为：`SUPERVISION_ENVIRONMENT=production` 时，若 `JWT_SECRET` 为空、为占位值或
+  长度 < 32，**服务会拒绝启动**（这是预期行为，不是故障）。开发环境留空即可，
+  会自动生成随机密钥。生成方式：`python -c "import secrets;print(secrets.token_urlsafe(48))"`；
+- **生产必改**：数据库/Neo4j/MinIO/Grafana 密码、初始管理员密码
+  （`Admin@12345` 已公开在文档中）；
 - **单 worker 说明**：FAISS/BM25 索引驻留进程内存，`--workers 1` 可避免多进程索引不一致；
   横向扩展需把向量检索切到独立服务（Compose 已预留 `embedding`/`reranker` 形态）；
 - **数据目录必须与卷挂载点一致**：配置项 `SUPERVISION_DATA_DIR` 决定索引与上传文件的落盘位置，
   compose 中固定为 `/app/var` 并把命名卷 `app_var` 挂到同一路径。若两者不一致，
   数据会写进容器可写层——重启即丢失，且看起来「明明写入了却检索不到」；
-- **长事务会让 DDL 永久等待**：`CREATE INDEX CONCURRENTLY` 不能回滚、且必须等所有并发事务结束。
-  数据库连接已统一设置 `idle_in_transaction_session_timeout=60000`，空闲事务会被自动回滚；
-  检查点构建也会先探测迁移表，已就绪就跳过 `setup()`；
-- **不要给检查点连接池设 `statement_timeout`**：一次评估可能持续数分钟，语句超时会把它误杀，
-  导致运行中降级为内存检查点（表现为 `checkpoint_backend=memory`）；
+- **长任务连接可能被回收**：一次评估持续数分钟，期间会话持有的连接可能被服务端断开。
+  落库阶段已内置「丢弃坏连接 + 重放」自愈。注意恢复顺序必须
+  `invalidate()` 先于 `rollback()`，顺序颠倒反而会阻断恢复（详见运维手册 7.2）；
+  也不要给检查点连接池设 `statement_timeout`——会误杀长任务，导致
+  `checkpoint_backend=memory`；
 - **健康检查日志**：`/health` 被容器每 20 秒轮询一次，成功请求不记访问日志（失败仍记录），
   避免淹没业务日志；
 - **Windows 事件循环**：psycopg 异步模式不支持 `ProactorEventLoop`，`app/cli.py` 在单 worker
