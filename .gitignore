@@ -47,3 +47,6 @@ deploy/data/
 *.swp
 .DS_Store
 Thumbs.db
+
+# 首次推送时 token 缺少 workflow scope，暂时排除；补齐 scope 后删除本行
+.github/
