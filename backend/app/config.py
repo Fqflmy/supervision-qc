@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     db_max_overflow: int = 20
     db_echo: bool = False
     db_connect_timeout: int = 3
+    #: 空闲事务回收阈值（秒）。Agent 一次评估会合法空闲数分钟（等 LLM 返回），
+    #: 阈值过小会被数据库判为闲置而强制断开连接，导致后续写库抛
+    #: PendingRollbackError。默认 15 分钟：正常任务碰不到，真正卡死的事务仍能回收。
+    db_idle_transaction_timeout_seconds: int = 900
 
     # ---------- Neo4j（SRS 5.4）----------
     neo4j_uri: str = "bolt://127.0.0.1:7687"

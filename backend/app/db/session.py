@@ -27,17 +27,24 @@ def _engine_kwargs() -> dict:
     if settings.is_sqlite:
         kwargs["connect_args"] = {"check_same_thread": False}
     else:
+        # 空闲事务回收：API 里存在「持有会话执行数十秒 LLM 调用」的端点，连接会长时间
+        # 停在 idle in transaction；这类空闲事务占住表锁，会让别人执行的
+        # CREATE INDEX CONCURRENTLY 永久等待（曾导致检索与 Agent 全线挂起）。
+        #
+        # 但阈值绝不能设小：Agent 一次评估合法空闲可达数分钟（等 LLM 返回），
+        # 阈值过小会被数据库判为「空闲事务」而强制断开，之后同一会话再写库就抛
+        #   sqlalchemy.exc.PendingRollbackError: Can't reconnect until invalid transaction is rolled back
+        # 这正是 CI 上 `test_eval_task_full_flow` 失败的原因——PG 日志明确记录
+        #   FATAL: terminating connection due to idle-in-transaction timeout
+        # 因此默认放宽到 15 分钟：正常任务绝不会碰到，真正卡死的事务仍会被回收。
+        idle_timeout_ms = max(60, settings.db_idle_transaction_timeout_seconds) * 1000
         kwargs.update(
             pool_size=settings.db_pool_size,
             max_overflow=settings.db_max_overflow,
             pool_recycle=1800,
             connect_args={
                 "connect_timeout": settings.db_connect_timeout,
-                # 关键防护：API 里存在「持有会话执行数十秒 LLM 调用」的端点，
-                # 连接会长时间停在 idle in transaction。这类空闲事务会占住表锁，
-                # 让别人执行的 CREATE INDEX CONCURRENTLY 永久等待（曾导致检索与
-                # Agent 全线挂起）。交给数据库自动回收，超过 60s 空闲即回滚。
-                "options": "-c idle_in_transaction_session_timeout=60000",
+                "options": f"-c idle_in_transaction_session_timeout={idle_timeout_ms}",
             },
         )
     return kwargs
