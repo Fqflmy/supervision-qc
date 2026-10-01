@@ -6,7 +6,6 @@ __pycache__/
 # pytest 在无法写入默认缓存目录时会在仓库内创建临时缓存目录（Windows 权限受限时常见）
 .pytest-cache-files-*/
 pytest-cache-files-*/
-*.egg-info/
 .mypy_cache/
 .ruff_cache/
 .venv/
@@ -47,6 +46,3 @@ deploy/data/
 *.swp
 .DS_Store
 Thumbs.db
-
-# 首次推送时 token 缺少 workflow scope，暂时排除；补齐 scope 后删除本行
-.github/
