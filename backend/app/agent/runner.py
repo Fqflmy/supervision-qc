@@ -14,6 +14,7 @@ import time
 import uuid
 from typing import Any, Optional
 
+from sqlalchemy.exc import InterfaceError, OperationalError, PendingRollbackError
 from sqlalchemy.orm import Session
 
 from app.agent.graph import AgentContext, AgentState, agent_context, get_agent_graph
@@ -84,10 +85,19 @@ async def _build_async_postgres_saver():
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
     from psycopg_pool import AsyncConnectionPool
 
-    # 显式自建连接池（而非 from_conn_string），以便：
-    # 1) 设置 idle_in_transaction_session_timeout —— 避免长事务阻塞
-    #    CREATE INDEX CONCURRENTLY 造成锁死（见 _checkpoint_schema_ready 说明）；
-    # 2) 设置 statement_timeout —— 任何语句卡死都能自行超时返回，而不是无限等待。
+    # 显式自建连接池（而非 from_conn_string），以便控制连接行为。
+    #
+    # 注意：这里**刻意不设** idle_in_transaction_session_timeout / statement_timeout。
+    #   检查点连接是 autocommit 的短事务，本身不会长时间停在 idle in transaction；
+    #   而一旦设了阈值，长评估任务（数分钟）中途就会被数据库断开连接，
+    #   导致 Agent 跑到一半降级为内存检查点，或落库时抛 PendingRollbackError。
+    #   历史教训：
+    #     - statement_timeout=120s  → Agent 中途降级为内存检查点
+    #     - idle_in_transaction=60s → PG 日志 FATAL: terminating connection
+    #                                 due to idle-in-transaction timeout，CI 测试失败
+    #   真正需要防的「长事务拖住 CREATE INDEX CONCURRENTLY」已由
+    #   _checkpoint_schema_ready() 先探测迁移状态、就绪即跳过 setup() 解决，
+    #   不再依赖连接级超时这种会误伤正常业务的粗暴手段。
     pool = AsyncConnectionPool(
         conninfo=_psycopg_dsn(),
         min_size=1,
@@ -95,10 +105,6 @@ async def _build_async_postgres_saver():
         kwargs={
             "autocommit": True,
             "prepare_threshold": 0,
-            # 只设空闲事务超时（防止长事务拖住 DDL）；**不设 statement_timeout**，
-            # 因为一次评估任务可能持续数分钟，检查点写入会被误杀
-            # （曾把 statement_timeout 设为 120s，导致 Agent 跑到一半降级为内存检查点）。
-            "options": "-c idle_in_transaction_session_timeout=60000",
         },
         open=False,
         timeout=30,
@@ -184,8 +190,8 @@ def get_checkpointer(prefer: Optional[str] = None) -> tuple[Any, str]:
         try:
             from langgraph.checkpoint.postgres import PostgresSaver
 
-            # 与异步版本一致：显式连接池 + 事务/语句超时，避免 setup() 的
-            # CREATE INDEX CONCURRENTLY 被长事务阻塞而无限等待
+            # 与异步版本保持一致：显式连接池，但不设连接级超时（原因见
+            # _build_async_postgres_saver 的注释：会误杀长任务的正常连接）
             from psycopg_pool import ConnectionPool
 
             pool = ConnectionPool(
@@ -195,7 +201,6 @@ def get_checkpointer(prefer: Optional[str] = None) -> tuple[Any, str]:
                 kwargs={
                     "autocommit": True,
                     "prepare_threshold": 0,
-                    "options": "-c idle_in_transaction_session_timeout=60000",
                 },
                 open=False,
                 timeout=30,
@@ -326,13 +331,18 @@ def _collect_basis(matches: list[dict]) -> list[dict]:
 
 def _persist_report(
     session: Session,
-    task: EvalTask,
+    task_id: uuid.UUID,
     report: dict,
     markdown: str,
     matches: list[dict],
     generator_model: str,
 ) -> EvalReport:
-    existing = session.query(EvalReport).filter(EvalReport.task_id == task.id).one_or_none()
+    """写入/更新评估报告。
+
+    只依赖 `task_id` 而不是 ORM 对象：会话经历 rollback（连接失效恢复）后，
+    再访问 ORM 属性会触发一次刷新查询，而那时连接可能仍然不可用。
+    """
+    existing = session.query(EvalReport).filter(EvalReport.task_id == task_id).one_or_none()
     basis_count = len({(m.get("spec_code"), m.get("clause_no")) for m in matches if m.get("clause_no")})
     non_compliance = sum(
         1 for m in matches if m.get("verdict") in {"non_compliant", "partial", "insufficient_evidence"}
@@ -356,7 +366,7 @@ def _persist_report(
         "generator_model": generator_model,
     }
     if existing is None:
-        existing = EvalReport(task_id=task.id, **payload)
+        existing = EvalReport(task_id=task_id, **payload)
         session.add(existing)
     else:
         for key, value in payload.items():
@@ -516,20 +526,15 @@ async def run_evaluation(
         machine.transition(target_state, enforce=False)
 
     # 落库
-    task.current_state = target_state.value
-    task.current_step = state_info.get("current_step") or task.current_step
-    task.iteration_count = int(final_state.get("iteration_count") or guard.iteration_count)
-    task.no_progress_rounds = int(final_state.get("no_progress_rounds") or guard.no_progress_rounds)
-    task.total_tokens = usage.total_tokens or guard.token_used
-    task.error_state = machine.state.error_state
-    task.guard_reason = state_info.get("guard_reason")
-    task.progress = _progress_of(target_state)
-    task.finished_at = utcnow() if target_state.value in {"COMPLETED", "FAILED", "CANCELLED", "DEGRADED"} else task.finished_at
+    subtasks = final_state.get("subtasks") or []
+    matches = final_state.get("matches") or []
 
-    machine.state.iteration_count = task.iteration_count
-    machine.state.no_progress_rounds = task.no_progress_rounds
-    machine.state.token_used = task.total_tokens
-    task.state_snapshot = {
+    # 预先取出纯量：rollback 之后访问 ORM 属性会触发刷新查询，而那时连接可能仍不可用。
+    task_id = task.id
+    markdown_out = final_state.get("markdown") or ""
+    prev_step = task.current_step
+    prev_finished_at = task.finished_at
+    snapshot = {
         **machine.state.to_snapshot(),
         "guard": guard.summary(),
         "errors": final_state.get("errors") or [],
@@ -537,36 +542,88 @@ async def run_evaluation(
         "checkpoint_backend": backend,
     }
 
-    subtasks = final_state.get("subtasks") or []
-    matches = final_state.get("matches") or []
-    if subtasks:
-        _persist_subtasks(session, task.id, subtasks)
-    if matches:
-        _persist_matches(session, task.id, matches)
-    _persist_step_logs(session, task.id, final_state, ctx.timings)
-
-    report_row = None
-    if final_state.get("report"):
-        _markdown = final_state.get("markdown") or ""
-        if not _markdown:
-            logger.error(
-                "报告 markdown 为空，请检查 report_node 输出",
-                extra={
-                    "task_id": str(task.id),
-                    "state_keys": sorted(final_state.keys()),
-                    "report_keys": sorted((final_state.get("report") or {}).keys()),
-                },
-            )
-        report_row = _persist_report(
-            session,
-            task,
-            final_state["report"],
-            _markdown,
-            matches,
-            generator_model=settings.llm_primary_model,
+    def _apply_task_fields() -> None:
+        """写回任务字段（可重放：rollback 会使对象过期，需重新赋值才能持久化）。"""
+        task.current_state = target_state.value
+        task.current_step = state_info.get("current_step") or prev_step
+        task.iteration_count = int(final_state.get("iteration_count") or guard.iteration_count)
+        task.no_progress_rounds = int(final_state.get("no_progress_rounds") or guard.no_progress_rounds)
+        task.total_tokens = usage.total_tokens or guard.token_used
+        task.error_state = machine.state.error_state
+        task.guard_reason = state_info.get("guard_reason")
+        task.progress = _progress_of(target_state)
+        task.finished_at = (
+            utcnow()
+            if target_state.value in {"COMPLETED", "FAILED", "CANCELLED", "DEGRADED"}
+            else prev_finished_at
         )
+        machine.state.iteration_count = task.iteration_count
+        machine.state.no_progress_rounds = task.no_progress_rounds
+        machine.state.token_used = task.total_tokens
+        task.state_snapshot = snapshot
 
-    session.flush()
+    _apply_task_fields()
+
+    def _write_results() -> Optional[EvalReport]:
+        """把本次执行结果落库（可安全重放）。"""
+        if subtasks:
+            _persist_subtasks(session, task_id, subtasks)
+        if matches:
+            _persist_matches(session, task_id, matches)
+        _persist_step_logs(session, task_id, final_state, ctx.timings)
+        row = None
+        if final_state.get("report"):
+            if not markdown_out:
+                logger.error(
+                    "报告 markdown 为空，请检查 report_node 输出",
+                    extra={
+                        "task_id": str(task_id),
+                        "state_keys": sorted(final_state.keys()),
+                        "report_keys": sorted((final_state.get("report") or {}).keys()),
+                    },
+                )
+            row = _persist_report(
+                session,
+                task_id,
+                final_state["report"],
+                markdown_out,
+                matches,
+                generator_model=settings.llm_primary_model,
+            )
+        session.flush()
+        return row
+
+    # 关键韧性：Agent 图执行可能持续数分钟（多次 LLM 调用），期间请求会话持有的
+    # 数据库连接可能已被服务端回收（空闲事务超时、连接池回收、网络抖动）。
+    # 这会让事务进入「失效」状态，此后任何 SQL 都抛
+    #   sqlalchemy.exc.PendingRollbackError: Can't reconnect until invalid transaction is rolled back
+    # （CI 上曾稳定复现，PostgreSQL 日志对应：
+    #   FATAL: terminating connection due to idle-in-transaction timeout）
+    #
+    # 处理方式（顺序很关键，实测依据见 scripts/probe_connection_recovery.py）：
+    #   必须**先** session.invalidate() 丢弃已死的连接，再 rollback() 复位事务状态，
+    #   然后重放「任务字段 + 结果落库」。
+    #   实测对比（同一故障场景各 3 次）：
+    #     invalidate()              → 3/3 成功
+    #     invalidate() + rollback() → 3/3 成功
+    #     rollback() + invalidate() → 0/3 失败
+    #     close()    + invalidate() → 0/3 失败
+    #   原因：rollback()/close() 都会在已死的连接上再发一次 ROLLBACK 命令而报
+    #   AdminShutdown，反而阻断恢复；只有先 invalidate() 才能丢弃坏连接。
+    #
+    # 重放安全性：落库函数是「先删后插」的幂等写法，且此刻事务尚未提交，
+    # 因此重试不会产生重复数据。
+    try:
+        report_row = _write_results()
+    except (PendingRollbackError, OperationalError, InterfaceError) as exc:
+        logger.warning(
+            "落库时会话连接已失效，丢弃坏连接后重试一次（长任务期间连接被回收属正常现象）",
+            extra={"task_id": str(task_id), "error": f"{type(exc).__name__}: {str(exc)[:160]}"},
+        )
+        session.invalidate()
+        session.rollback()
+        _apply_task_fields()
+        report_row = _write_results()
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     logger.info(
         "评估任务执行结束",
