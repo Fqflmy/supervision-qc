@@ -45,3 +45,4 @@
 # 语言统计时不计入
 package-lock.json linguist-generated=true
 *.md              linguist-documentation=true
+LICENSE           text

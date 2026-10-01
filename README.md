@@ -1,5 +1,11 @@
 # 工程监理质量智能评估系统
 
+[![CI](https://github.com/Fqflmy/supervision-qc/actions/workflows/ci.yml/badge.svg)](https://github.com/Fqflmy/supervision-qc/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.139-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Vue](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white)](https://vuejs.org/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 面向工程监理领域的**规范知识库智能检索与自动化质量评估平台**。针对规范文档数量多、人工查询效率低、质量评估依赖专家经验等问题，实现「规范知识管理 → 智能问答 → 标准匹配 → 自动化质量评估」的闭环。
 
 技术栈：**LangChain / LangGraph / DeepSeek(Qwen) / FAISS / Neo4j / PostgreSQL / FastAPI / Vue3 + TypeScript / Docker**
@@ -114,6 +120,22 @@ supervision-qc/
 ---
 
 ## 3. 快速开始
+
+**已有本仓库**（本地目录）→ 直接看下面的方案 A / B。
+**从 GitHub 克隆**：
+
+```bash
+git clone https://github.com/Fqflmy/supervision-qc.git
+cd supervision-qc
+cp deploy/.env.example deploy/.env   # 填入 DEEPSEEK_API_KEY 与 SILICONFLOW_API_KEY
+docker compose up -d                 # 一条命令启动全部服务（含自动数据初始化）
+```
+
+打开 <http://localhost:8080>，登录 `admin / Admin@12345`。
+
+> 无需本地 GPU 或模型权重：检索默认使用硅基流动托管的 BGE-M3 与 BGE-Reranker。
+> 没有 API Key 也能跑通全链路：`.\start.ps1 -Offline`（走确定性假模型，用于验证功能）。
+> 更简明的日常操作见 [日常使用](docs/日常使用.md)。
 
 提供两条一键启动路径，按场景选择：
 
@@ -407,5 +429,16 @@ docker compose exec -T api python /app/scripts/fix_checkpoint_locks.py --fix    
 | `docs/日常使用.md` | **日常使用**：一页搞定启动/停止/重启/常见情况（平时只看这个就够） |
 | `docs/概要设计说明书.md` | 概要设计：模块划分、关键时序、图状态机、部署拓扑、需求追踪矩阵 |
 | `docs/部署运维手册.md` | **部署与运维**：环境要求、配置项全量说明、启动方式、数据备份恢复、监控告警、故障排查手册、安全加固、上线检查清单、命令速查 |
-| [需求规格说明书](docs/工程监理质量智能评估系统-需求规格说明书SRS.md) | 需求基线（63 条功能需求、状态机、接口清单、验收标准） |
+| [需求规格说明书 SRS](docs/工程监理质量智能评估系统-需求规格说明书SRS.md) | 需求基线（63 条功能需求、状态机、接口清单、验收标准） |
 | `README.md`（本文） | 架构说明、快速开始、验证方式、常见问题、已知限制 |
+| [LICENSE](LICENSE) | MIT 许可证 |
+
+---
+
+## 10. 贡献与许可
+
+- **许可证**：本项目采用 [MIT License](LICENSE)，可自由使用、修改与分发（保留版权声明）。
+- **提交规范**：建议使用 Conventional Commits（`feat:` / `fix:` / `docs:` / `chore:`）。
+- **提交前自检**：`python -m pytest -q`（后端）、`npx vue-tsc --noEmit`（前端类型）。
+- **CI**：推送后 GitHub Actions 会自动执行后端测试、前端构建与编排校验。
+- **密钥**：请勿提交真实 `.env`；仓库已通过 `.gitignore` 排除，只保留 `.env.example` 模板。
