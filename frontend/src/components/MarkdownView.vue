@@ -6,6 +6,7 @@
 import { computed } from 'vue'
 import { marked } from 'marked'
 import hljs from 'highlight.js/lib/common'
+import { renderSafeHtml } from '../utils/sanitize'
 
 const props = defineProps<{ content?: string | null }>()
 
@@ -24,6 +25,8 @@ marked.setOptions({
 const html = computed(() => {
   const raw = props.content || ''
   if (!raw) return '<p class="muted">暂无内容</p>'
-  return marked.parse(raw) as string
+  // 必须净化：报告内容由大模型基于用户上传的文档生成，
+  // 未净化时恶意文档可注入脚本，形成存储型 XSS（详见 utils/sanitize.ts）
+  return renderSafeHtml(marked.parse(raw) as string)
 })
 </script>
