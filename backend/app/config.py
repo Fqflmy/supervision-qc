@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     #: 阈值过小会被数据库判为闲置而强制断开连接，导致后续写库抛
     #: PendingRollbackError。默认 15 分钟：正常任务碰不到，真正卡死的事务仍能回收。
     db_idle_transaction_timeout_seconds: int = 900
+    #: 表结构管理方式（SRS 5.2）：
+    #:   auto       = 生产环境用 alembic 迁移，其他环境用 create_all（保留开发便利）
+    #:   alembic    = 强制走 alembic 迁移（正式环境；改表结构必须生成迁移）
+    #:   create_all = 强制用 create_all（仅建议临时验证，会绕过版本管理）
+    db_schema_mode: str = "auto"
 
     # ---------- Neo4j（SRS 5.4）----------
     neo4j_uri: str = "bolt://127.0.0.1:7687"

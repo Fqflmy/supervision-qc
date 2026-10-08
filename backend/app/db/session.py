@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+from pathlib import Path
 from typing import Iterator, Optional
 
 from sqlalchemy import create_engine, text
@@ -90,8 +91,56 @@ def get_db() -> Iterator[Session]:
         session.close()
 
 
+def resolve_schema_mode() -> str:
+    """决定表结构管理方式，返回 ``alembic`` 或 ``create_all``。
+
+    - ``db_schema_mode=auto``：生产环境用 alembic（结构变更必须版本化），
+      其他环境用 create_all（保留开发时的快速迭代便利）；
+    - 显式指定 ``alembic`` / ``create_all`` 则强制使用。
+    """
+    mode = (settings.db_schema_mode or "auto").strip().lower()
+    if mode in {"alembic", "create_all"}:
+        return mode
+    is_production = (settings.environment or "dev").strip().lower() == "production"
+    return "alembic" if is_production else "create_all"
+
+
+def _alembic_config():
+    """构造 Alembic 配置（迁移脚本位于 backend/alembic）。"""
+    from alembic.config import Config as AlembicConfig
+
+    backend_root = Path(__file__).resolve().parents[2]
+    config = AlembicConfig(str(backend_root / "alembic.ini"))
+    config.set_main_option("script_location", str(backend_root / "alembic"))
+    return config
+
+
+def alembic_stamp_head() -> None:
+    """把当前库标记为「已是最新迁移版本」。
+
+    用于此前由 ``create_all`` 建表的存量库：结构已就位，无需重放建表迁移。
+    """
+    from alembic import command
+
+    command.stamp(_alembic_config(), "head")
+
+
+def alembic_has_version() -> bool:
+    """当前库是否已有迁移版本记录（是否已纳入版本管理）。"""
+    try:
+        with get_engine().connect() as conn:
+            row = conn.execute(text("SELECT version_num FROM alembic_version LIMIT 1")).fetchone()
+        return row is not None
+    except Exception:  # noqa: BLE001 - 表不存在或查询失败都视为未纳入
+        return False
+
+
 def init_db(create_all: bool = True) -> bool:
-    """初始化数据库结构。返回是否成功连接。"""
+    """初始化数据库结构。返回是否成功连接。
+
+    参数 ``create_all`` 保留用于兼容既有调用；表结构管理方式由
+    ``db_schema_mode`` 决定（见 ``resolve_schema_mode``）。
+    """
     from app.db import models  # noqa: F401  确保模型完成注册
 
     engine = get_engine()
@@ -101,9 +150,37 @@ def init_db(create_all: bool = True) -> bool:
     except Exception as exc:
         logger.error("数据库连接失败", extra={"error": str(exc), "url": _safe_url()})
         return False
-    if create_all:
+
+    if not create_all:
+        return True
+
+    mode = resolve_schema_mode()
+    if mode == "alembic":
+        try:
+            from alembic import command
+
+            command.upgrade(_alembic_config(), "head")
+            logger.info(
+                "数据库结构已通过 alembic 迁移到最新版本",
+                extra={"mode": mode, "environment": settings.environment},
+            )
+        except Exception as exc:  # noqa: BLE001
+            # 迁移失败必须显著暴露：继续启动会导致代码与库结构不匹配
+            logger.error(
+                "alembic 迁移失败，请手工执行 `python -m alembic upgrade head` 排查",
+                extra={"error": f"{type(exc).__name__}: {str(exc)[:400]}"},
+            )
+            raise
+    else:
         models.Base.metadata.create_all(bind=engine)
-        logger.info("数据库表结构已同步", extra={"tables": len(models.Base.metadata.tables)})
+        logger.info(
+            "数据库表结构已同步（create_all）",
+            extra={
+                "tables": len(models.Base.metadata.tables),
+                "mode": mode,
+                "hint": "正式环境请设置 SUPERVISION_DB_SCHEMA_MODE=alembic 以启用版本化迁移",
+            },
+        )
     return True
 
 

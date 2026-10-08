@@ -351,6 +351,10 @@ docker compose exec api python scripts/rebuild_index.py   # 换 Embedding 模型
   现已改为：`SUPERVISION_ENVIRONMENT=production` 时，若 `JWT_SECRET` 为空、为占位值或
   长度 < 32，**服务会拒绝启动**（这是预期行为，不是故障）。开发环境留空即可，
   会自动生成随机密钥。生成方式：`python -c "import secrets;print(secrets.token_urlsafe(48))"`；
+- **数据库结构变更必须走迁移**：正式环境设置 `SUPERVISION_DB_SCHEMA_MODE=alembic`，
+  启动时会自动 `alembic upgrade head`。开发环境默认仍用 `create_all`（它会创建缺失的表，
+  但**不处理列变更**）。存量库需先 `alembic stamp head` 纳管；
+  详见[部署运维手册 5.6](docs/部署运维手册.md#56-数据库结构迁移alembic)；
 - **生产必改**：数据库/Neo4j/MinIO/Grafana 密码、初始管理员密码
   （`Admin@12345` 已公开在文档中）；
 - **单 worker 说明**：FAISS/BM25 索引驻留进程内存，`--workers 1` 可避免多进程索引不一致；
