@@ -217,19 +217,31 @@ def test_judge_dashboard_aggregates(client, auth_headers):
 
 
 def test_report_content_carries_matches_for_citation_check(client, auth_headers, session):
-    """回归：报告必须携带条款比对结果，否则 Judge 的引用校验拿不到任何引用。"""
+    """回归：报告必须携带条款比对结果，否则 Judge 的引用校验拿不到任何引用。
+
+    选取条件说明：必须挑「带真实引用（clause_no 非空）」的报告。
+    Agent 在未检索到依据时会产出 ``insufficient_evidence`` 的降级比对
+    （``citation={}``、``clause_no=null``），这类报告**本来就没有引用可校验**，
+    引用提取返回 0 条是正确行为。若选取条件只判断 matches 非空，
+    就会随机挑中降级报告而误报失败（历史上确实如此）。
+    """
     listing = client.get("/api/v1/eval/tasks?page_size=20", headers=auth_headers).json()["data"]["items"]
+
+    def has_real_citation(match: dict) -> bool:
+        return bool(match.get("clause_no") or (match.get("citation") or {}).get("clause_no"))
+
     report_payload = None
     for task in listing:
         detail = client.get(f"/api/v1/eval/tasks/{task['id']}", headers=auth_headers).json()["data"]
         if not detail.get("report_id"):
             continue
         candidate = client.get(f"/api/v1/eval/tasks/{task['id']}/report", headers=auth_headers).json()["data"]
-        if (candidate.get("content") or {}).get("matches"):
+        matches = (candidate.get("content") or {}).get("matches") or []
+        if any(has_real_citation(m) for m in matches if isinstance(m, dict)):
             report_payload = candidate
             break
     if report_payload is None:
-        pytest.skip("没有带 matches 的报告，先执行一次评估任务")
+        pytest.skip("没有带真实引用的报告，先执行一次评估任务")
 
     matches = report_payload["content"]["matches"]
     assert matches, "报告 content.matches 不应为空"
@@ -246,8 +258,37 @@ def test_report_content_carries_matches_for_citation_check(client, auth_headers,
     assert row is not None
     citations, conclusions = _citations_of(row)
     assert citations, "引用校验输入不应为空，否则幻觉识别形同失效"
-    assert len(citations) >= len(matches) - 1  # 允许同条款去重
     assert all(item["clause_no"] for item in citations)
+
+
+def test_citation_extraction_skips_degraded_matches(session):
+    """降级比对（insufficient_evidence）不应产生虚假引用。
+
+    这是与上一条互补的用例：无依据的比对**必须**被引用提取跳过，
+    否则会把「没有依据」包装成「有依据」，反而制造幻觉。
+    """
+    from app.api.routes.judge import _citations_of
+
+    class _Row:
+        def __init__(self, content):
+            self.content = content
+            self.id = "00000000-0000-0000-0000-000000000000"
+
+    degraded = {
+        "matches": [
+            {
+                "verdict": "insufficient_evidence",
+                "citation": {},
+                "clause_no": None,
+                "spec_code": None,
+                "reasoning": "未检索到可支撑判定的规范条款",
+            }
+        ],
+        "evidence_basis": [],
+        "analysis": {},
+    }
+    citations, _ = _citations_of(_Row(degraded))
+    assert citations == [], "降级比对不应产生引用"
 
 
 def test_audit_log_records_actions(client, auth_headers):

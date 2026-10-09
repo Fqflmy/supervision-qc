@@ -26,10 +26,12 @@ from app.core.logging_conf import get_logger
 from app.db import utcnow
 from app.db.models import (
     AgentStepLog,
+    AgentToolCall,
     EvalReport,
     EvalSubtask,
     EvalTask,
     MatchResult,
+    User,
 )
 from app.llm.gateway import current_usage, start_usage_session
 from app.retrieval.pipeline import RetrievalPipeline
@@ -403,6 +405,31 @@ def _persist_step_logs(session: Session, task_id: uuid.UUID, state: dict, timing
         )
 
 
+def _persist_tool_calls(session: Session, task_id: uuid.UUID, records: list) -> None:
+    """落库 Agent 工具调用审计（对应权限设计的「工具调用权限」）。
+
+    与 ``_persist_step_logs`` 一样先删后写：支持断点续跑时重放，避免重复累积。
+    审计记录本身是「本次执行实际发生的调用流水」，重跑就该重新记录。
+    """
+    if not records:
+        return
+    session.query(AgentToolCall).filter(AgentToolCall.task_id == task_id).delete()
+    for seq, record in enumerate(records, start=1):
+        session.add(
+            AgentToolCall(
+                task_id=task_id,
+                seq=seq,
+                tool=getattr(record, "tool", ""),
+                allowed=bool(getattr(record, "allowed", False)),
+                user_id=getattr(record, "user_id", None),
+                params=getattr(record, "params", None),
+                reason=(getattr(record, "reason", "") or None),
+                duration_ms=getattr(record, "duration_ms", None),
+                output_digest=(getattr(record, "output_digest", "") or None),
+            )
+        )
+
+
 def _digest(step: str, state: dict) -> dict:
     if step == AgentStep.PLANNING.value:
         return {"subtasks": len(state.get("subtasks") or [])}
@@ -484,7 +511,20 @@ async def run_evaluation(
     }
 
     task.started_at = task.started_at or utcnow()
-    ctx = AgentContext(guard=guard, session=session, pipeline=pipeline, timings={})
+    # 注入发起人身份：工具级授权需要它（见 agent/tools.py）。
+    # 用任务上的 user_id 反查，避免改动 run_evaluation 的签名（那会牵动多处调用）。
+    actor = None
+    task_user_id = getattr(task, "user_id", None)
+    if task_user_id is not None:
+        try:
+            actor = session.get(User, task_user_id)
+        except Exception as exc:  # noqa: BLE001 - 查不到用户时按最小权限处理
+            logger.warning("加载评估发起人失败", extra={"error": str(exc)[:200]})
+            actor = None
+
+    ctx = AgentContext(
+        guard=guard, session=session, pipeline=pipeline, timings={}, user=actor
+    )
 
     final_state: dict[str, Any] = dict(initial)
     error: Optional[str] = None
@@ -571,6 +611,7 @@ async def run_evaluation(
         if matches:
             _persist_matches(session, task_id, matches)
         _persist_step_logs(session, task_id, final_state, ctx.timings)
+        _persist_tool_calls(session, task_id, ctx.tool_calls)
         row = None
         if final_state.get("report"):
             if not markdown_out:

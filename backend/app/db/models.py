@@ -301,6 +301,9 @@ class EvalTask(Base, TimestampMixin):
     steps: Mapped[list["AgentStepLog"]] = relationship(
         back_populates="task", cascade="all, delete-orphan"
     )
+    tool_calls: Mapped[list["AgentToolCall"]] = relationship(
+        back_populates="task", cascade="all, delete-orphan"
+    )
 
 
 class EvalSubtask(Base, TimestampMixin):
@@ -378,6 +381,40 @@ class AgentStepLog(Base, TimestampMixin):
     __table_args__ = (Index("ix_agent_step_task", "task_id", "seq"),)
 
     task: Mapped["EvalTask"] = relationship(back_populates="steps")
+
+
+class AgentToolCall(Base, TimestampMixin):
+    """Agent 工具调用审计（对应权限设计的「工具调用权限」）。
+
+    与 ``agent_step_log`` 的区别：后者是**五阶段流程摘要**（且落库时会先删除重写，
+    用于断点续跑重放）；本表是**工具调用的不可变审计流水**，记录每次调用是否放行、
+    拒绝原因与参数摘要，用于事后追溯「谁在何时调用了什么、是否越权」。
+    """
+
+    __tablename__ = "agent_tool_call"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("eval_task.id", ondelete="CASCADE"), nullable=False
+    )
+    seq: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    tool: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: 是否放行
+    allowed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: 调用者（发起评估的用户）
+    user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("sys_user.id", ondelete="CASCADE")
+    )
+    #: 参数摘要（长文本已截断）
+    params: Mapped[Optional[dict]] = mapped_column(JSONType)
+    #: 拒绝原因或错误信息
+    reason: Mapped[Optional[str]] = mapped_column(Text)
+    duration_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    output_digest: Mapped[Optional[str]] = mapped_column(String(255))
+
+    __table_args__ = (Index("ix_agent_tool_task", "task_id", "seq"),)
+
+    task: Mapped["EvalTask"] = relationship(back_populates="tool_calls")
 
 
 class EvalReport(Base, TimestampMixin):

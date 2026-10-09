@@ -12,7 +12,7 @@ import contextlib
 import contextvars
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated, Any, Iterator, Optional, Sequence, TypedDict
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -62,6 +62,11 @@ class AgentContext:
     session: Session
     pipeline: RetrievalPipeline
     timings: dict
+    #: 发起评估的用户。用于工具级授权（见 agent/tools.py）。
+    #: 为空表示由后台任务触发（如无请求上下文的续跑），此时工具按最小权限处理。
+    user: Optional[Any] = None
+    #: 工具调用审计记录（调用结束后由 runner 落库）
+    tool_calls: list = field(default_factory=list)
 
 
 _ctx: contextvars.ContextVar[Optional[AgentContext]] = contextvars.ContextVar("agent_ctx", default=None)
@@ -274,22 +279,34 @@ async def retrieval_node(state: AgentState) -> dict:
         cached = guard.dedup.get("retrieval", query)
         if cached is not None:
             return query, cached
-        try:
-            result = await pipeline.retrieve(
-                query, session, kb_ids=kb_ids, specialty=subtask.get("specialty"), top_k=5
+        # 经工具注册表调用：统一做权限校验、参数校验与审计（见 agent/tools.py）。
+        # 不经 pipeline 直接调用，避免绕过知识库授权闸门。
+        from app.agent.tools import get_registry
+
+        result, record = await get_registry().invoke(
+            "kb_retrieve",
+            ctx,
+            query=query,
+            kb_ids=list(kb_ids) if kb_ids else None,
+            specialty=subtask.get("specialty"),
+            top_k=5,
+        )
+        ctx.tool_calls.append(record)
+        if result is None:
+            logger.warning(
+                "子任务检索被拒绝或失败",
+                extra={"query": query[:60], "reason": record.reason[:200]},
             )
-            payload_out = {
+            return query, {
                 "query": query,
-                "no_evidence": result.no_evidence,
-                "latency_ms": result.latency_ms,
-                "clauses": [c.to_dict() for c in result.clauses],
-                "sub_queries": result.sub_queries,
+                "error": record.reason,
+                "clauses": [],
+                "no_evidence": True,
+                "degraded": True,
             }
-            guard.dedup.put("retrieval", query, payload_out)
-            return query, payload_out
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("子任务检索失败", extra={"query": query[:60], "error": str(exc)[:200]})
-            return query, {"query": query, "error": str(exc)[:300], "clauses": [], "no_evidence": True, "degraded": True}
+        payload_out = {"query": query, **result}
+        guard.dedup.put("retrieval", query, payload_out)
+        return query, payload_out
 
     pairs = await asyncio.gather(*[one(st) for st in subtasks])
     for key, value in pairs:

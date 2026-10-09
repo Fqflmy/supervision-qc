@@ -13,7 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.routes import admin, auth, eval, judge, knowledge, retrieval
+from app.api.routes import admin, auth, eval, judge, knowledge, retrieval, users
 from app.config import settings
 from app.constants import ERROR_CODES
 from app.core.errors import AppError
@@ -215,7 +215,7 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
 # --------------------------------------------------------------------------- #
 # 路由注册（SRS 6.2）
 # --------------------------------------------------------------------------- #
-for router_module in (auth, knowledge, retrieval, eval, judge, admin):
+for router_module in (auth, knowledge, retrieval, eval, judge, admin, users):
     app.include_router(router_module.router, prefix=settings.api_prefix)
 
 
