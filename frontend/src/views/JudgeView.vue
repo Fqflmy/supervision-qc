@@ -14,7 +14,10 @@
       <div class="metric">
         <div class="metric__label">待人工复核</div>
         <div class="metric__value">{{ dashboard?.needs_human_count ?? 0 }}</div>
-        <div class="metric__foot">低分 / 分歧 / 幻觉引用触发</div>
+        <!-- 口径说明：这是「历史上被 Judge 标记 needs_human 的评审记录数」，
+             与下方「待复核队列」（当前处于 NEED_HUMAN/DEGRADED 的任务）不是同一个数 ——
+             前者含已处理过的记录。不写清楚会让人以为队列漏了数据。 -->
+        <div class="metric__foot">累计被标记的评审（含已处理）</div>
       </div>
       <div class="metric">
         <div class="metric__label">模型分歧</div>
@@ -74,6 +77,44 @@
       </section>
     </div>
 
+    <!-- 待复核队列：审核人员的**工作面**。
+         看板只给统计数字（「待人工复核 3」），若不列出具体是哪些任务，
+         审核人员无法知道该处理什么 —— 这是审核角色的核心诉求。 -->
+    <section class="panel">
+      <div class="panel__head">
+        <div class="panel__title">待复核队列</div>
+        <div style="display: flex; gap: 8px; align-items: center">
+          <span class="panel__hint">当前处于「待人工复核 / 降级」状态的任务</span>
+          <el-button size="small" @click="loadPending">刷新</el-button>
+        </div>
+      </div>
+      <el-table :data="pending" size="small" empty-text="当前没有待复核任务">
+        <el-table-column prop="title" label="任务" min-width="220" show-overflow-tooltip />
+        <el-table-column label="状态" width="120">
+          <template #default="{ row }">
+            <span class="tag" :class="`tag--${stateTone(row.current_state)}`">
+              {{ stateLabel(row.current_state) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="转复核原因" min-width="220" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span class="small muted">{{ row.guard_reason || 'Judge 评分低于阈值' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="完成时间" width="160">
+          <template #default="{ row }">
+            <span class="small muted">{{ row.finished_at ? fmtTime(row.finished_at) : '-' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="110" align="right">
+          <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="open(row.id)">去复核</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </section>
+
     <section class="panel">
       <div class="panel__head">
         <div class="panel__title">最近完成任务与评审结果</div>
@@ -125,12 +166,21 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { evalApi, judgeApi, type EvalTaskDetail, type JudgeDashboard } from '@/api'
-import { DIMENSION_LABELS, GRADE_LABELS, fmtScore, stateLabel, stateTone } from '@/utils/format'
+import { evalApi, judgeApi, type EvalTask, type EvalTaskDetail, type JudgeDashboard } from '@/api'
+import {
+  DIMENSION_LABELS,
+  GRADE_LABELS,
+  fmtScore,
+  fmtTime,
+  stateLabel,
+  stateTone,
+} from '@/utils/format'
 
 const router = useRouter()
 const dashboard = ref<JudgeDashboard | null>(null)
 const tasks = ref<EvalTaskDetail[]>([])
+/** 待复核队列（审核人员的工作面） */
+const pending = ref<EvalTask[]>([])
 const loading = ref(false)
 
 function gradeTone(grade?: string | null) {
@@ -162,6 +212,32 @@ async function load() {
     ElMessage.error(err instanceof Error ? err.message : '加载失败')
   } finally {
     loading.value = false
+  }
+  await loadPending()
+}
+
+/**
+ * 拉取待复核队列。
+ *
+ * 后端已支持 `GET /eval/tasks?state=NEED_HUMAN`，但审核人员此前只能自己去
+ * 评估任务页手筛状态 —— 而该页已按职责从审核角色菜单中移除。
+ * 因此必须在这里给出直接入口，否则「待人工复核 3 个」只是个数字、无法落地。
+ *
+ * DEGRADED 同样计入：降级任务也需要人工确认。
+ */
+async function loadPending() {
+  try {
+    const [needHuman, degraded] = await Promise.all([
+      evalApi.list({ page: 1, page_size: 50, state: 'NEED_HUMAN' }),
+      evalApi.list({ page: 1, page_size: 50, state: 'DEGRADED' }),
+    ])
+    const merged = [...needHuman.items, ...degraded.items]
+    // 按完成时间倒序，最近触发的排前面
+    merged.sort((a, b) => String(b.finished_at ?? '').localeCompare(String(a.finished_at ?? '')))
+    pending.value = merged
+  } catch {
+    // 队列加载失败不阻塞看板；用户可点刷新重试
+    pending.value = []
   }
 }
 

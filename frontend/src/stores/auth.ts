@@ -7,22 +7,23 @@ import { roleCan, roleIsAdmin, roleLabel as labelOfRole, type Permission } from 
 /**
  * 各角色的默认落地页。
  *
- * 与该角色的**主要职责**对应（不是「能访问什么」，而是「该先干什么」）：
- * - ``admin``      管用户与项目授权 -> 用户与授权页
- * - ``kb_manager`` 维护规范库 -> 知识库管理
+ * ⚠️ **必须指向该角色菜单里真实存在、且有权访问的页面**。
+ * 否则会形成死循环：落地页无权 → 守卫踢回 home → home 又跳回该落地页。
+ * 这条约束由 `frontend/scripts/check-role-matrix.mjs` 校验（落地页可达性）。
+ *
+ * 与该角色的**主要职责**对应：
+ * - ``admin``      平台运营全貌 -> 用户与授权
+ * - ``kb_manager`` 规范维护 -> 知识库管理
  * - ``engineer``   发起质量评估 -> 评估任务
  * - ``expert``     人工复核 -> 质量评审（待复核队列）
- * - ``viewer``     只读 -> 运行总览
- *
- * 这是**体验层**的落地页选择，不代表权限：真正的边界在后端，
- * 前端路由与菜单都会按权限点过滤。
+ * - ``viewer``     只读查询 -> 智能问答（唯一可访问入口）
  */
 export const ROLE_HOME: Record<string, string> = {
   admin: 'users',
   kb_manager: 'knowledge',
   engineer: 'evaluation',
   expert: 'judge',
-  viewer: 'dashboard',
+  viewer: 'chat',
 }
 
 export function homeForRole(role?: string | null): string {

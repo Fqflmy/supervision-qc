@@ -32,13 +32,14 @@ const routes: RouteRecordRaw[] = [
         path: 'dashboard',
         name: 'dashboard',
         component: () => import('@/views/DashboardView.vue'),
-        meta: { title: '运行总览', icon: 'DataBoard' },
+        // 平台运营视角：全库规模、组件自检、检索链路参数，仅管理员
+        meta: { title: '运行总览', icon: 'DataBoard', perm: 'admin:*' },
       },
       {
         path: 'knowledge',
         name: 'knowledge',
         component: () => import('@/views/KnowledgeView.vue'),
-        // 上传/解析/发布规范需要写权限；只读角色看知识库没有意义
+        // 上传/解析/发布规范需要写权限；页面内各操作按钮也按 canWriteKb 二次控制
         meta: { title: '知识库管理', icon: 'Files', perm: 'kb:write' },
       },
       {
@@ -51,8 +52,8 @@ const routes: RouteRecordRaw[] = [
         path: 'graph',
         name: 'graph',
         component: () => import('@/views/GraphView.vue'),
-        // 图谱构建需 kg:write；工程师没有该权限，但其工作（查条款引用链）需要看图
-        meta: { title: '知识图谱', icon: 'Share', perm: 'kg:write', permAny: ['kg:write', 'retrieval:read'] },
+        // 构建图谱需 kg:write；工程师用来看条款引用链（支撑质量判定）
+        meta: { title: '知识图谱', icon: 'Share', permAny: ['kg:write', 'eval:write'] },
       },
       {
         path: 'chat',
@@ -64,8 +65,8 @@ const routes: RouteRecordRaw[] = [
         path: 'evaluation',
         name: 'evaluation',
         component: () => import('@/views/EvaluationView.vue'),
-        // 审核人员只有 eval:review，进来是为了看复核队列，页面内会隐藏「新建」
-        meta: { title: '评估任务', icon: 'Checked', perm: 'eval:read' },
+        // 发起评估是监理工程师的职责；审核人员改在质量评审页处理待复核
+        meta: { title: '评估任务', icon: 'Checked', perm: 'eval:write' },
       },
       {
         path: 'evaluation/:id',
@@ -77,7 +78,8 @@ const routes: RouteRecordRaw[] = [
         path: 'judge',
         name: 'judge',
         component: () => import('@/views/JudgeView.vue'),
-        meta: { title: '质量评审', icon: 'Medal', perm: 'judge:read' },
+        // 审核人员的工作面（含待复核队列）；只读用户在报告详情内看评分即可
+        meta: { title: '质量评审', icon: 'Medal', permAny: ['eval:review', 'judge:write'] },
       },
       {
         path: 'users',
@@ -135,6 +137,13 @@ router.beforeEach(async (to) => {
     if (!allowed) {
       // 回「入口分流页」而非硬编码 dashboard —— 后者对无权角色同样不可达，
       // 会造成连续重定向；home 再按真实角色选择落地页。
+      //
+      // 但要防死循环：若落地页本身就无权（ROLE_HOME 配错），
+      // 踢回 home 后 home 又跳回该落地页会无限循环、页面卡死。
+      // 因此当目标已是 home 时不再重定向，直接放行由 RoleHomeView 处理。
+      if (to.name === 'home') {
+        return true
+      }
       return { name: 'home' }
     }
   }

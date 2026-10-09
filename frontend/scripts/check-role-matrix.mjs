@@ -56,12 +56,12 @@ function parseFrontendRoles() {
 
 /** 菜单定义（与 MainLayout.vue 的 allMenus 对应） */
 const MENUS = [
-  { name: 'dashboard', title: '运行总览' },
+  { name: 'dashboard', title: '运行总览', perm: 'admin:*' },
   { name: 'knowledge', title: '知识库管理', perm: 'kb:write' },
-  { name: 'graph', title: '知识图谱', permAny: ['kg:write', 'retrieval:read'] },
+  { name: 'graph', title: '知识图谱', permAny: ['kg:write', 'eval:write'] },
   { name: 'chat', title: '智能问答', perm: 'retrieval:read' },
-  { name: 'evaluation', title: '评估任务', perm: 'eval:read' },
-  { name: 'judge', title: '质量评审', perm: 'judge:read' },
+  { name: 'evaluation', title: '评估任务', perm: 'eval:write' },
+  { name: 'judge', title: '质量评审', permAny: ['eval:review', 'judge:write'] },
   { name: 'users', title: '用户与授权', perm: 'admin:*' },
   { name: 'system', title: '系统与审计', perm: 'admin:*' },
 ]
@@ -78,13 +78,22 @@ function visibleMenus(grants) {
   }).map((m) => m.name)
 }
 
-/** 各角色预期的菜单集合（改动菜单规则时需同步这里，作为显式契约） */
+/**
+ * 各角色预期的菜单集合（改动菜单规则时需同步这里，作为显式契约）。
+ *
+ * 原则：**每个角色只看到与其职责相关的功能**。
+ *   系统管理员    平台运营全貌
+ *   知识库管理员  规范维护
+ *   监理工程师    发起评估 + 查引用链
+ *   审核人员      复核工作面
+ *   普通用户      只读问答
+ */
 const EXPECTED_MENUS = {
   admin: ['dashboard', 'knowledge', 'graph', 'chat', 'evaluation', 'judge', 'users', 'system'],
-  kb_manager: ['dashboard', 'knowledge', 'graph', 'chat', 'evaluation', 'judge'],
-  engineer: ['dashboard', 'graph', 'chat', 'evaluation', 'judge'],
-  expert: ['dashboard', 'graph', 'chat', 'evaluation', 'judge'],
-  viewer: ['dashboard', 'graph', 'chat', 'evaluation', 'judge'],
+  kb_manager: ['knowledge', 'graph', 'chat'],
+  engineer: ['graph', 'chat', 'evaluation'],
+  expert: ['chat', 'judge'],
+  viewer: ['chat'],
 }
 
 function sortedEqual(a, b) {
@@ -169,6 +178,74 @@ for (const role of ['viewer']) {
   }
 }
 console.log('  [OK] 只读角色不显示写权限入口')
+
+// 运行总览是平台运营视角，仅管理员
+for (const role of allRoles) {
+  const menus = visibleMenus(backend[role] ?? [])
+  if (role !== 'admin' && menus.includes('dashboard')) {
+    failures += 1
+    console.log(`  [FAIL] ${role} 不该看到「运行总览」（平台运营视角，含系统内部参数）`)
+  }
+}
+console.log('  [OK] 运行总览仅管理员可见')
+
+// 评估任务入口只给能发起评估的角色；质量评审入口只给审核角色
+for (const role of allRoles) {
+  const perms = backend[role] ?? []
+  const menus = visibleMenus(perms)
+  if (menus.includes('evaluation') && !can(perms, 'eval:write')) {
+    failures += 1
+    console.log(`  [FAIL] ${role} 看到「评估任务」但无 eval:write（会进去发现不能发起）`)
+  }
+  if (
+    menus.includes('judge') &&
+    !can(perms, 'eval:review') &&
+    !can(perms, 'judge:write')
+  ) {
+    failures += 1
+    console.log(`  [FAIL] ${role} 看到「质量评审」但无复核权限`)
+  }
+}
+console.log('  [OK] 评估任务 / 质量评审入口与发起、复核权限对应')
+
+// 各角色菜单应**互不相同**（否则说明没按职责区分）
+const signatures = allRoles.map((r) => visibleMenus(backend[r] ?? []).sort().join(','))
+const uniqueCount = new Set(signatures).size
+if (uniqueCount < allRoles.length) {
+  const dupes = allRoles.filter((r, i) => signatures.indexOf(signatures[i]) !== i)
+  failures += 1
+  console.log(`  [FAIL] 这些角色的菜单完全相同，未按职责区分：${dupes.join(', ')}`)
+} else {
+  console.log(`  [OK] ${allRoles.length} 个角色的菜单各不相同（按职责区分）`)
+}
+
+// 落地页必须可达：否则「落地页无权 -> 守卫踢回 home -> home 又跳回落地页」会死循环
+console.log('')
+console.log('=== 落地页可达性（防止死循环）===')
+const ROLE_HOME = {
+  admin: 'users',
+  kb_manager: 'knowledge',
+  engineer: 'evaluation',
+  expert: 'judge',
+  viewer: 'chat',
+}
+for (const role of allRoles) {
+  const home = ROLE_HOME[role]
+  if (!home) {
+    failures += 1
+    console.log(`  [FAIL] ${role} 未配置落地页`)
+    continue
+  }
+  const menus = visibleMenus(backend[role] ?? [])
+  if (!menus.includes(home)) {
+    failures += 1
+    console.log(
+      `  [FAIL] ${role} 的落地页「${home}」不在其菜单中 -> 会造成无限重定向、页面卡死`,
+    )
+  } else {
+    console.log(`  [OK] ${role} -> ${home}`)
+  }
+}
 
 console.log('')
 if (failures > 0) {
