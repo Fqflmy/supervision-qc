@@ -90,6 +90,29 @@
         <el-form-item label="任务名称">
           <el-input v-model="form.title" placeholder="如 地下室剪力墙混凝土施工质量评估" />
         </el-form-item>
+        <el-form-item label="所属项目" required>
+          <!-- 项目归属决定数据隔离：非管理员只能建在自己被授权的项目下。
+               只授权一个项目时自动选中并置灰，无需用户操心。 -->
+          <el-select
+            v-model="form.project_id"
+            placeholder="请选择项目"
+            style="width: 100%"
+            :disabled="projects.length <= 1"
+          >
+            <el-option
+              v-for="p in projects"
+              :key="p.id"
+              :label="`${p.name}（${p.code}）`"
+              :value="p.id"
+            />
+          </el-select>
+          <div v-if="!projects.length" class="panel__hint" style="color: var(--el-color-danger)">
+            当前账号未被授权任何项目，无法创建评估任务。请联系管理员在「用户与授权」中分配。
+          </div>
+          <div v-else-if="projects.length === 1" class="panel__hint">
+            已自动选择你唯一被授权的项目。
+          </div>
+        </el-form-item>
         <el-form-item label="评估类型">
           <el-select v-model="form.eval_type" style="width: 220px">
             <el-option label="检验批质量评估" value="inspection_lot" />
@@ -169,7 +192,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
-import { evalApi, kbApi, type EvalTask, type KnowledgeBase } from '@/api'
+import { evalApi, kbApi, usersApi, type EvalTask, type KnowledgeBase, type ProjectItem } from '@/api'
 import { STATE_LABELS, fmtTime, stateLabel, stateTone } from '@/utils/format'
 import { useAuthStore } from '@/stores/auth'
 
@@ -206,10 +229,13 @@ const roleHintDesc = computed(() => {
 })
 
 const kbs = ref<KnowledgeBase[]>([])
+/** 当前用户被授权的项目（创建任务时选择，决定数据隔离归属） */
+const projects = ref<ProjectItem[]>([])
 const createVisible = ref(false)
 const creating = ref(false)
 const form = reactive({
   title: '',
+  project_id: null as number | null,
   eval_type: 'inspection_lot',
   specialty: '结构工程',
   part: '',
@@ -263,6 +289,15 @@ async function createTask() {
     ElMessage.warning('请至少填写评估对象或问题描述')
     return
   }
+  // 项目归属是数据隔离的依据，必须在提交前确定
+  if (!form.project_id) {
+    ElMessage.warning(
+      projects.value.length
+        ? '请选择所属项目'
+        : '当前账号未被授权任何项目，请联系管理员分配后再创建任务',
+    )
+    return
+  }
   creating.value = true
   try {
     const options: Record<string, unknown> = {
@@ -272,6 +307,7 @@ async function createTask() {
       token_budget: form.token_budget,
     }
     const result = await evalApi.create({
+      project_id: form.project_id,
       eval_type: form.eval_type,
       specialty: form.specialty,
       title: form.title || `${form.part || '评估对象'}质量评估`,
@@ -302,7 +338,29 @@ onMounted(async () => {
   } catch {
     /* 忽略 */
   }
+  await loadProjects()
 })
+
+/**
+ * 加载当前用户被授权的项目。
+ *
+ * 非管理员创建任务必须带 project_id（数据隔离依据），但此前没有接口
+ * 让普通用户知道自己被授权了哪些项目 —— 工程师因此无法实际发起评估。
+ * `GET /me/projects` 补上了这个缺口；只授权一个项目时自动选中。
+ */
+async function loadProjects() {
+  try {
+    const result = await usersApi.myProjects()
+    projects.value = result.items
+    if (result.can_auto_select && result.items.length === 1) {
+      form.project_id = result.items[0].id
+    } else if (result.items.length > 1 && !form.project_id) {
+      form.project_id = null
+    }
+  } catch {
+    projects.value = []
+  }
+}
 </script>
 
 <style scoped>

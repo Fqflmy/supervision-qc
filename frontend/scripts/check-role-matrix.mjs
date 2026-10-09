@@ -57,7 +57,8 @@ function parseFrontendRoles() {
 /** 菜单定义（与 MainLayout.vue 的 allMenus 对应） */
 const MENUS = [
   { name: 'dashboard', title: '运行总览', perm: 'admin:*' },
-  { name: 'knowledge', title: '知识库管理', perm: 'kb:write' },
+  // 知识库：有 kb:write 的是「管理」，仅 kb:read 的是「查询」——同一页面
+  { name: 'knowledge', title: '知识库', perm: 'kb:read' },
   { name: 'graph', title: '知识图谱', permAny: ['kg:write', 'eval:write'] },
   { name: 'chat', title: '智能问答', perm: 'retrieval:read' },
   { name: 'evaluation', title: '评估任务', perm: 'eval:write' },
@@ -83,17 +84,20 @@ function visibleMenus(grants) {
  *
  * 原则：**每个角色只看到与其职责相关的功能**。
  *   系统管理员    平台运营全貌
- *   知识库管理员  规范维护
+ *   知识库管理员  规范维护（管理态知识库）
  *   监理工程师    发起评估 + 查引用链
  *   审核人员      复核工作面
- *   普通用户      只读问答
+ *   普通用户      只读查询（规范原文 + 问答）
+ *
+ * 注：viewer 与 expert 在此恰好都含 knowledge/chat/judge 之外的不同项，
+ * 但两者并不相同（viewer 无 judge）。断言里会校验「各角色菜单各不相同」。
  */
 const EXPECTED_MENUS = {
   admin: ['dashboard', 'knowledge', 'graph', 'chat', 'evaluation', 'judge', 'users', 'system'],
   kb_manager: ['knowledge', 'graph', 'chat'],
-  engineer: ['graph', 'chat', 'evaluation'],
-  expert: ['chat', 'judge'],
-  viewer: ['chat'],
+  engineer: ['knowledge', 'graph', 'chat', 'evaluation'],
+  expert: ['knowledge', 'chat', 'judge'],
+  viewer: ['knowledge', 'chat'],
 }
 
 function sortedEqual(a, b) {
@@ -169,12 +173,13 @@ for (const role of allRoles) {
 }
 console.log('  [OK] 每个角色至少有一个可访问页面')
 
-// 只读角色不得看到需要写权限的入口
+// 只读角色不得看到**写权限**入口（知识库现在是只读可查，属职责内功能）
 for (const role of ['viewer']) {
-  const menus = visibleMenus(backend[role] ?? [])
-  if (menus.includes('knowledge')) {
+  const perms = backend[role] ?? []
+  const menus = visibleMenus(perms)
+  if (menus.includes('knowledge') && can(perms, 'kb:write')) {
     failures += 1
-    console.log(`  [FAIL] ${role}（只读）不该看到知识库管理（需 kb:write）`)
+    console.log(`  [FAIL] ${role}（只读）不该拿到知识库的写权限`)
   }
 }
 console.log('  [OK] 只读角色不显示写权限入口')

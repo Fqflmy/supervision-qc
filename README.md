@@ -279,6 +279,7 @@ npm run dev
 | `& $py -m pytest tests\test_demo_login.py` | **登录身份选择**（生产关闭/角色对应/不可提权） | 通过（6 项） |
 | `& $py -m pytest tests\test_role_matrix.py` | **角色权限矩阵**（前后端权限一致 / 各角色菜单契约 / 指标口径） | 通过（6 项） |
 | `& $py -m pytest tests\test_schema_bootstrap.py` | **结构初始化与启动顺序**（入口顺序/镜像内容/存量库纳管） | 通过（8 项） |
+| `& $py -m pytest tests\test_authz_write_actions.py` | **写操作鉴权**（只读不得触发执行/提交复核；单项目自动归属） | 通过（7 项） |
 | `& $py scripts\check_schema.py` | **结构自查**（判定全新库 / 存量库未纳管 / 已纳管） | 通过 |
 | `& $py scripts\shot_roles.py` | **逐角色界面截图**（核验菜单集合与落地页） | 通过（4 角色） |
 | `& $py -m pytest tests\test_metrics_endpoint.py` | **指标端点与抓取鉴权**（Prometheus 文本格式） | 通过（20 项） |

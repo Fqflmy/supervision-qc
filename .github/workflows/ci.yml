@@ -107,6 +107,13 @@ jobs:
         working-directory: frontend
         run: npx vue-tsc --noEmit
 
+      - name: 角色权限矩阵一致性
+        # 校验前端镜像的权限表与后端 deps.py 是否一致、各角色菜单是否符合契约、
+        # 落地页是否可达（防跳转死循环）。前后端任一侧改了权限而另一侧没跟上，
+        # 这一步就会失败 —— 是最关键的一致性防线。
+        working-directory: frontend
+        run: node scripts/check-role-matrix.mjs
+
       - name: 生产构建
         working-directory: frontend
         run: npm run build
@@ -129,3 +136,66 @@ jobs:
           cp .env.example .env
           docker compose -f docker-compose.yml config -q
           docker compose -f docker-compose-infra.yml config -q
+
+  image-build:
+    name: 镜像构建
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 准备环境文件
+        working-directory: deploy
+        run: cp .env.example .env
+
+      - uses: docker/setup-buildx-action@v3
+
+      # 为什么不推镜像也要构建：
+      # 「CI 全绿」曾掩盖过「Dockerfile 漏 COPY alembic 目录、容器反复重启」
+      # 这类问题 —— 本机跑测试完全看不出（本机直接读源码目录），只在镜像里炸。
+      # 因此必须在合并前验证镜像真的能构建出来。
+      - name: 构建 api 镜像
+        working-directory: deploy
+        run: docker compose -f docker-compose.yml build api
+
+      - name: 构建 web 镜像
+        working-directory: deploy
+        run: docker compose -f docker-compose.yml build web
+
+      - name: 校验镜像内迁移脚本齐全
+        # alembic 目录缺失会导致容器启动即失败（Path doesn't exist: /app/alembic），
+        # 这里显式检查，让失败原因一眼可见而不是等到部署才发现。
+        run: |
+          IMAGE=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'api' | head -1)
+          echo "检查镜像：$IMAGE"
+          docker run --rm --entrypoint sh "$IMAGE" -c \
+            'test -f /app/alembic.ini && test -d /app/alembic && echo "[OK] alembic 已就位"'
+
+  security-scan:
+    name: 依赖漏洞扫描
+    runs-on: ubuntu-latest
+    # 与前端 job 内的报告步骤重复度较高，这里独立成 job 便于单独查看与后续改为阻塞。
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 后端依赖扫描（pip-audit）
+        continue-on-error: true
+        run: |
+          python -m pip install --upgrade pip --quiet
+          pip install --quiet pip-audit
+          pip-audit -r backend/requirements.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: 前端依赖扫描（npm audit）
+        continue-on-error: true
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund --ignore-scripts
+          npm audit --audit-level=high

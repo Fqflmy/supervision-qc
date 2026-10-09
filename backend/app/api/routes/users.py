@@ -285,3 +285,52 @@ def my_scope(session: DbSession, user: CurrentUser) -> dict:
             ),
         }
     )
+
+
+@router.get("/me/projects", summary="当前用户被授权的项目（供创建任务时选择）")
+def my_projects(session: DbSession, user: CurrentUser) -> dict:
+    """返回当前用户可用的项目清单（含名称）。
+
+    为什么需要它
+    ------------
+    创建评估任务时，非管理员必须指定 ``project_id`` 且需在自己被授权的范围内
+    （防止越权写入他人项目）。但此前只有 ``/admin/projects`` 能列出项目，
+    而它是管理员专属 —— 于是**工程师有 eval:write 权限却无从得知该传哪个 ID**，
+    前端也没有项目下拉，主流程实际走不通。
+
+    本接口面向所有登录用户，只返回**其被授权**的项目：
+
+    - 管理员：全部启用中的项目（不受 project_ids 限制）；
+    - 其他角色：``sys_user.project_ids`` 对应的项目。
+
+    返回值刻意与 ``/admin/projects`` 保持同样的字段形状，
+    前端两个场景可复用同一套渲染逻辑。
+    """
+    from app.core.authz import is_admin
+
+    stmt = select(Project).order_by(Project.id)
+    if not is_admin(user):
+        allowed = sorted(project_ids_of(user))
+        if not allowed:
+            return ok({"items": [], "total": 0, "can_auto_select": False})
+        stmt = stmt.where(Project.id.in_(allowed))
+
+    rows = session.execute(stmt).scalars().all()
+    items = [
+        {
+            "id": p.id,
+            "code": p.code,
+            "name": p.name,
+            "specialty": p.specialty,
+            "status": p.status,
+        }
+        for p in rows
+    ]
+    return ok(
+        {
+            "items": items,
+            "total": len(items),
+            # 只有一个项目时前端无需让用户选，也提示后端可自动采用
+            "can_auto_select": len(items) == 1,
+        }
+    )

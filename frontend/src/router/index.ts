@@ -39,8 +39,10 @@ const routes: RouteRecordRaw[] = [
         path: 'knowledge',
         name: 'knowledge',
         component: () => import('@/views/KnowledgeView.vue'),
-        // 上传/解析/发布规范需要写权限；页面内各操作按钮也按 canWriteKb 二次控制
-        meta: { title: '知识库管理', icon: 'Files', perm: 'kb:write' },
+        // 页面同时服务两种角色：有 kb:write 的可管理（上传/解析/发布），
+        // 仅 kb:read 的为只读查询 —— 写操作按钮由页面内的 canWriteKb 控制。
+        // 因此这里只要 kb:read 即可进入（委托：只读用户也应能查规范原文）。
+        meta: { title: '知识库', icon: 'Files', perm: 'kb:read' },
       },
       {
         path: 'knowledge/:id',

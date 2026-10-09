@@ -61,7 +61,7 @@ def test_demo_identities_in_dev(client, monkeypatch):
     assert data["enabled"] is True
 
     roles = {item["role"] for item in data["identities"]}
-    assert roles == {"admin", "engineer", "expert", "viewer"}
+    assert roles == {"admin", "engineer", "expert", "kb_manager", "viewer"}
 
     # 每个身份都应给出可用的用户名与落点
     for item in data["identities"]:
@@ -74,9 +74,11 @@ def test_demo_identities_in_dev(client, monkeypatch):
 def test_identity_home_matches_backend_role_capability(client, monkeypatch):
     """落点必须与该角色的实际权限相符，否则登录后会看到无权页面。
 
-    - 只有 admin 能进 users（管理页）
-    - 只有 expert/admin 能进 judge 做复核
-    - engineer 进评估任务
+    这是**防跳转死循环**的关键校验：若落点页面该角色无权访问，
+    路由守卫会把它踢回 home，home 又跳回该落点 —— 页面反复跳转、无法使用。
+
+    注：`knowledge` 落点现在只要求 ``kb:read``（页面同时服务管理态与只读态，
+    写操作由页面内 canWriteKb 控制），因此不再要求 kb:write。
     """
     monkeypatch.delenv("SUPERVISION_DEMO_LOGIN", raising=False)
     monkeypatch.setattr("app.config.settings.environment", "dev", raising=False)
@@ -85,19 +87,31 @@ def test_identity_home_matches_backend_role_capability(client, monkeypatch):
     from app.api.deps import ROLE_PERMISSIONS
 
     response = client.get("/api/v1/auth/demo-identities")
-    for item in response.json()["data"]["identities"]:
+    identities = response.json()["data"]["identities"]
+
+    # 每个落点所需的权限点（与前端路由 meta.perm / permAny 对应）
+    home_requires = {
+        "users": ["admin:*"],
+        "system": ["admin:*"],
+        "dashboard": ["admin:*"],
+        "knowledge": ["kb:read"],
+        "graph": ["kg:write", "eval:write"],
+        "chat": ["retrieval:read"],
+        "evaluation": ["eval:write"],
+        "judge": ["eval:review", "judge:write"],
+    }
+
+    for item in identities:
         role, home = item["role"], item["home"]
         perms = ROLE_PERMISSIONS.get(role, set())
+        required = home_requires.get(home)
+        assert required, f"{role} 的落点 {home} 未在 home_requires 中登记，无法校验可达性"
 
-        if home == "users":
-            assert "*" in perms or "admin:*" in perms, f"{role} 落点 users 但无管理权限"
-        if home == "judge" and role != "viewer":
-            # 评审页需要能看到复核队列
-            assert "eval:review" in perms or "*" in perms or "judge:write" in perms
-        if home == "knowledge":
-            assert "kb:write" in perms or "*" in perms, f"{role} 落点知识库但无写权限"
-        if home == "evaluation":
-            assert "eval:write" in perms or "*" in perms, f"{role} 落点评估但无发起权限"
+        allowed = "*" in perms or any(p in perms for p in required)
+        assert allowed, (
+            f"{role} 的落点 {home} 需要 {required}，但该角色权限为 {sorted(perms)} —— "
+            "登录后会被守卫踢回，形成反复跳转"
+        )
 
 
 def test_demo_login_does_not_grant_extra_privilege(client, requires_db, monkeypatch):

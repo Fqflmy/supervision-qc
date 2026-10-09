@@ -69,11 +69,27 @@ def create_task(
 ) -> dict:
     # 项目授权：非管理员只能把任务建在自己被授权的项目下。
     # 否则会出现「创建后自己都看不到」或「越权写入他人项目」。
+    #
+    # 同时解决一个「权限给了但流程走不通」的问题：非管理员必须传 project_id，
+    # 但工程师未必知道自己被授权了哪些项目（可通过 GET /me/projects 查）。
+    # 因此当用户**只被授权一个项目**且未指定时，自动采用该项目 ——
+    # 单项目是常见情形，不应要求每次手工指定；多项目时仍要求显式选择以保证隔离。
     if not is_admin(user):
-        allowed_projects = project_ids_of(user)
+        allowed_projects = sorted(project_ids_of(user))
+        if not allowed_projects:
+            raise ForbiddenError(
+                "当前账号未被授权任何项目，无法创建评估任务。"
+                "请联系管理员在「用户与授权」中为你分配项目。"
+            )
         if body.project_id is None:
-            raise ForbiddenError("非管理员创建任务必须指定 project_id（且需在授权项目范围内）")
-        if int(body.project_id) not in allowed_projects:
+            if len(allowed_projects) == 1:
+                body = body.model_copy(update={"project_id": allowed_projects[0]})
+            else:
+                raise ForbiddenError(
+                    f"当前账号被授权 {len(allowed_projects)} 个项目，"
+                    "创建任务时必须指定 project_id（可在 GET /api/v1/me/projects 查询）"
+                )
+        elif int(body.project_id) not in allowed_projects:
             logger.warning(
                 "越权创建任务被拒绝",
                 extra={"user_id": user.id, "project_id": body.project_id},
@@ -124,7 +140,10 @@ async def run_task(
     request: Request,
     task_id: uuid.UUID,
     session: DbSession,
-    user: CurrentUser,
+    # 触发 Agent 执行会调用多次 LLM（真实消耗 Token），必须限定写权限。
+    # 此前只做 assert_task_access（归属/项目校验），导致**只读用户看到任务后
+    # 也能触发执行** —— 读权限不等于写权限。
+    user: Annotated[User, require_permission("eval:write")],
     resume: bool = Query(False, description="是否从最近检查点续跑"),
 ) -> dict:
     task = session.get(EvalTask, task_id)
@@ -156,7 +175,8 @@ def submit_task(
     request: Request,
     task_id: uuid.UUID,
     session: DbSession,
-    user: CurrentUser,
+    # 同 run：后台执行同样消耗 LLM Token，需写权限
+    user: Annotated[User, require_permission("eval:write")],
     background: BackgroundTasks,
 ) -> dict:
     task = session.get(EvalTask, task_id)
@@ -466,7 +486,10 @@ def resume_task(
 @router.post("/feedback", summary="专家复核反馈（FR-JDG-06 反馈闭环）")
 def create_feedback(
     session: DbSession,
-    user: CurrentUser,
+    # 复核反馈会写入 HumanFeedback 并影响评估结论，必须限定为具备复核权限的角色。
+    # 此前只要求登录，导致只读用户也能提交复核意见、污染质量记录；
+    # 与 /tasks/{id}/resume 要求的 eval:review 保持一致。
+    user: Annotated[User, require_permission("eval:review")],
     body: FeedbackCreate = Body(...),
 ) -> dict:
     feedback = HumanFeedback(

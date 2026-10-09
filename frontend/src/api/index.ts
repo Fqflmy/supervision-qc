@@ -502,8 +502,17 @@ export interface MyScope {
   warning?: string | null
 }
 
+export interface MyProjectsResult {
+  items: ProjectItem[]
+  total: number
+  /** 只被授权一个项目时为 true —— 前端无需让用户选择 */
+  can_auto_select: boolean
+}
+
 export const usersApi = {
   listProjects: () => api.get<ProjectItem[]>('/admin/projects'),
+  /** 当前用户被授权的项目（所有登录用户可调，供创建任务时选择） */
+  myProjects: () => api.get<MyProjectsResult>('/me/projects'),
   listUsers: (params: { page?: number; page_size?: number; keyword?: string }) =>
     api.get<PageData<ManagedUser>>('/admin/users', params),
   createUser: (payload: UserCreatePayload) => api.post<ManagedUser>('/admin/users', payload),

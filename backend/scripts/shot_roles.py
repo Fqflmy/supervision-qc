@@ -24,14 +24,14 @@ sys.path.insert(0, str(BACKEND))
 ARTIFACTS = ROOT / "var" / "artifacts"
 
 #: 身份 -> (期望菜单数, 期望落地页)
-#: 注：仅包含登录页提供的演示身份（后端 /auth/demo-identities）。
-#: kb_manager 虽在权限表中有角色，但种子数据未创建该账号，因此无法在此验证。
+#: 与后端 /auth/demo-identities 的 home 字段、前端 ROLE_HOME 必须一致。
 #: 菜单数按「每个角色只显示与其职责相关的功能」原则确定。
 EXPECTED = {
     "系统管理员": (8, "/users"),
-    "监理工程师": (3, "/evaluation"),
-    "审核人员": (2, "/judge"),
-    "普通用户": (1, "/chat"),
+    "知识库管理员": (3, "/knowledge"),
+    "监理工程师": (4, "/evaluation"),
+    "审核人员": (3, "/judge"),
+    "普通用户": (2, "/chat"),
 }
 
 
@@ -83,6 +83,7 @@ def main() -> int:
 
             safe = {
                 "系统管理员": "admin",
+                "知识库管理员": "kb_manager",
                 "监理工程师": "engineer",
                 "审核人员": "expert",
                 "普通用户": "viewer",

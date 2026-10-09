@@ -81,8 +81,15 @@ const envLabel = ref('')
 const allMenus = [
   // 运行总览是**平台运营视角**（全库规模、组件状态、检索链路参数），归管理员。
   { name: 'dashboard', title: '运行总览', icon: DataBoard, perm: 'admin:*' as Permission },
-  // 知识库管理与图谱构建属规范维护职责
-  { name: 'knowledge', title: '知识库管理', icon: Files, perm: 'kb:write' as Permission },
+  // 知识库：有 kb:write 的是「管理」（可上传/解析/发布），仅 kb:read 的是「查询」。
+  // 页面内各写操作已按 canWriteKb 禁用，因此同一页面可安全地服务两种角色。
+  // 标题随权限变化，避免只读用户看到「管理」二字以为有写权限。
+  {
+    name: 'knowledge',
+    title: auth.can('kb:write') ? '知识库管理' : '规范查询',
+    icon: Files,
+    perm: 'kb:read' as Permission,
+  },
   {
     name: 'graph',
     title: '知识图谱',

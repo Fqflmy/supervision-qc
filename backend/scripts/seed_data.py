@@ -217,6 +217,10 @@ async def seed(reset: bool = False) -> int:
                 ("engineer", "监理工程师", ["结构工程"], project.id),
                 ("expert", "审核专家", ["结构工程"], project.id),
                 ("viewer", "只读用户", ["结构工程"], project.id),
+                # 知识库管理员：规范维护职责（上传/解析/构建图谱）。
+                # 此前权限表与菜单规则都覆盖了该角色，却没有账号可用，
+                # 属「文档里有、实际用不到」——这里补上使其真正可用。
+                ("kb_manager", "知识库管理员", ["通用"], project.id),
             ]
             created_any = False
             for role, full_name, specialties, pid in demo_users:

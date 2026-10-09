@@ -121,11 +121,14 @@ def demo_identities() -> dict:
         return ok({"enabled": False, "identities": []})
 
     password = settings.seed_default_admin_password
+    # ⚠️ `home` 必须与前端 ROLE_HOME 一致，且指向该角色有权访问的页面。
+    # viewer 原为 'dashboard'，但运行总览已收归管理员 —— 不同步会导致
+    # 登录后立刻被路由守卫踢回，形成反复跳转。
     identities = [
         {
             "role": "engineer",
             "label": "监理工程师",
-            "description": "上传规范、发起质量评估",
+            "description": "发起质量评估、查条款引用链",
             "home": "evaluation",
             "username": "engineer",
             "password": password,
@@ -139,10 +142,18 @@ def demo_identities() -> dict:
             "password": password,
         },
         {
+            "role": "kb_manager",
+            "label": "知识库管理员",
+            "description": "规范入库、解析、构建知识图谱",
+            "home": "knowledge",
+            "username": "kb_manager",
+            "password": password,
+        },
+        {
             "role": "viewer",
             "label": "普通用户",
-            "description": "只读查询授权范围内的报告",
-            "home": "dashboard",
+            "description": "只读查询规范原文与评估报告",
+            "home": "chat",
             "username": "viewer",
             "password": password,
         },

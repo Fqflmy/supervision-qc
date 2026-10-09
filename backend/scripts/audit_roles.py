@@ -123,6 +123,11 @@ def login(base: str, username: str) -> str | None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default="http://127.0.0.1:8080")
+    parser.add_argument(
+        "--keep-accounts",
+        action="store_true",
+        help="保留审计账号（默认结束后自动清理，避免污染用户列表）",
+    )
     args = parser.parse_args()
     base = args.base.rstrip("/")
 
@@ -136,13 +141,13 @@ def main() -> int:
     missing = [r for r, t in tokens.items() if not t]
     if missing:
         print(f"  [X] 以下账号登录失败：{missing}")
+        if not args.keep_accounts:
+            cleanup()
         return 1
     print("  全部角色登录成功")
     print()
 
     # 表头
-    header = f"  {'功能':14s}" + "".join(f"{label:>8s}" for _, label in
-                                          [(r, l[:6]) for r, l in ROLES])
     print("=== 各角色接口访问结果（200/403/404/422 表示可达，401 未登录）===")
     print(f"  {'功能':16s}" + "".join(f"{l[:6]:>9s}" for _, l in ROLES))
     print("  " + "-" * (16 + 9 * len(ROLES)))
@@ -165,7 +170,44 @@ def main() -> int:
     print("  OK   = 该角色可访问（含参数不足但鉴权通过的 422/400）")
     print("  禁   = 403，权限不足（预期内）")
     print("  其它 = HTTP 状态码（多为缺少必填参数，说明鉴权已通过）")
+
+    # 审计账号与探测任务是临时产物，默认清理 ——
+    # 否则会一直留在用户列表里（实测曾把 4 行撑到 9 行）。
+    if args.keep_accounts:
+        print()
+        print("  已保留审计账号（--keep-accounts）；清理请运行：")
+        print("    python scripts/cleanup_audit_users.py")
+    else:
+        print()
+        cleanup()
+
     return 0
+
+
+def cleanup() -> None:
+    """清理审计账号及其探测任务。"""
+    print("=== 清理审计账号 ===")
+    try:
+        import subprocess
+        import sys as _sys
+
+        script = Path(__file__).with_name("cleanup_audit_users.py")
+        result = subprocess.run(
+            [_sys.executable, str(script)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=180,
+        )
+        for line in (result.stdout or "").splitlines():
+            if line.strip():
+                print(f"  {line.strip()}")
+        if result.returncode != 0:
+            print("  [警告] 清理未成功，可手工运行 scripts/cleanup_audit_users.py")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [警告] 清理失败：{type(exc).__name__}: {exc}")
+        print("  可手工运行 scripts/cleanup_audit_users.py")
 
 
 if __name__ == "__main__":
