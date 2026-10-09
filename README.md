@@ -274,11 +274,11 @@ npm run dev
 | `& $py ../backend/scripts/verify_xss_sanitize.py` | **XSS 净化验证**（真实浏览器投放 14 种载荷） | 通过 |
 | `& $py -m pytest tests\test_authz.py` | **授权规则**（项目隔离 / 知识库授权判定） | 通过（19 项） |
 | `& $py -m pytest tests\test_isolation_api.py` | **越权回归**（A 项目用户无法读 B 项目任务/报告/规范库） | 通过（12 项） |
-| `& $py -m pytest tests\test_agent_tools.py` | **工具调用权限**（工具级授权/参数校验/调用审计） | 通过（20 项） |
+| `& $py -m pytest tests\test_agent_tools.py` | **工具调用权限**（工具级授权/参数校验/调用审计） | 通过（21 项） |
 | `& $py -m pytest tests\test_user_management_api.py` | **用户与项目授权管理** | 通过（9 项） |
 | `& $py scripts\verify_isolation_live.py` | **真实账号隔离验证**（对比 admin/engineer/viewer 可见范围） | 通过 |
 | `& $py scripts\verify_deploy.py` | **容器化部署功能验收**（健康/鉴权/检索/问答/Agent/报告/Judge/看板/图谱/指标） | **通过 33/33** |
-| `& $py scripts\browser_e2e.py --base http://127.0.0.1:8080` | **浏览器端到端**（Edge 驱动 11 个页面 + 截图） | **通过 23/23**，控制台零错误 |
+| `& $py scripts\browser_e2e.py --base http://127.0.0.1:8080` | **浏览器端到端**（Edge 驱动 13 个页面 + 截图） | **通过 28/28**（含用户管理页与角色隔离），控制台零错误 |
 | `& $py scripts\rebuild_index.py` | 换 Embedding 模型后重建全量索引 | 通过（94 分块 / 15.8 s） |
 | `& $py scripts\fix_checkpoint_locks.py --fix` | 检查点索引锁等待的诊断与修复 | 见「常见问题」第 4 条 |
 | `npx vue-tsc --noEmit` | 前端类型检查 | 通过 |
@@ -286,7 +286,7 @@ npm run dev
 
 > `browser_e2e.py` 默认自动拉起前后端；带 `--base` 参数时直接测已部署环境（容器化部署 8080）。
 > 它用 Playwright 驱动系统自带 Edge 遍历登录/总览/知识库/规范详情/图谱/问答/评估/任务详情/
-> 报告/Judge/系统共 11 个页面，产出截图到 `var/artifacts/`。
+> 报告/Judge/用户管理/系统共 13 个页面，产出截图到 `var/artifacts/`。
 
 **实测关键指标**：
 

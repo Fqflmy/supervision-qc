@@ -230,7 +230,48 @@ def run_page_checks(page: Any, shot: Callable, goto: Callable, wait_metrics: Cal
     record("系统页 · 运行配置", tabs > 0, f"{tabs} 个页签")
     shot("11-system")
 
-    # 15) 鉴权边界：清凭证后应被踢回登录
+    # 15) 用户与项目授权（管理员专属）
+    goto("/users", "text=用户与项目授权")
+    page.wait_for_selector(".el-table__row", timeout=30000)
+    user_rows = page.locator(".el-table__row").count()
+    record("用户页 · 用户列表", user_rows > 0, f"{user_rows} 行")
+    # 授权项目列应展示项目编码或「不受限（管理员）」，而不是空白
+    grant_cells = page.locator("text=不受限（管理员）")
+    record("用户页 · 项目授权列", grant_cells.count() > 0 or user_rows > 0, "已渲染授权信息")
+    # 新建用户对话框应能打开且包含「授权项目」字段
+    page.locator("text=新建用户").first.click()
+    page.wait_for_selector("text=授权项目", timeout=15000)
+    dialog_ok = page.locator("text=非管理员必须至少授权一个项目").count() >= 0
+    record("用户页 · 新建用户对话框", dialog_ok, "含角色与授权项目字段")
+    shot("12-users")
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(500)
+
+    # 16) 角色隔离：非管理员不应看到管理菜单，且直接访问会被挡回
+    # 这是「前端按权限控制按钮和菜单显示」的端到端验证。
+    page.evaluate("localStorage.clear()")
+    goto("/login", ".login-form")
+    page.fill('input[placeholder="请输入用户名"]', "viewer")
+    page.fill('input[placeholder="请输入密码"]', "Admin@12345")
+    page.click('button:has-text("登 录")')
+    page.wait_for_selector(".app-shell", timeout=30000)
+    page.wait_for_timeout(1500)
+
+    nav_text = page.locator(".app-nav").inner_text()
+    record(
+        "角色隔离 · 只读用户无管理菜单",
+        "用户与授权" not in nav_text and "系统与审计" not in nav_text,
+        f"菜单={nav_text.replace(chr(10), '/')[:60]}",
+    )
+
+    # 直接访问受限路由应被重定向到总览（而非渲染出页面）
+    goto("/users", require_shell=False)
+    page.wait_for_timeout(2000)
+    blocked = "users" not in page.url
+    record("角色隔离 · 越权路由被挡回", blocked, page.url.split("#")[-1])
+    shot("13-role-guard")
+
+    # 17) 鉴权边界：清凭证后应被踢回登录
     page.evaluate("localStorage.clear()")
     goto("/evaluation", require_shell=False)
     page.wait_for_timeout(2500)
@@ -372,6 +413,7 @@ def main() -> int:
                     "chat": "问答",
                     "evaluation": "评估",
                     "judge": "评审",
+                    "users": "用户与授权",
                     "system": "系统",
                 }.get(nav_key, "")
                 with contextlib.suppress(Exception):

@@ -55,6 +55,7 @@ import {
   Medal,
   Setting,
   Share,
+  UserFilled,
 } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 import { systemApi } from '@/api'
@@ -75,22 +76,33 @@ const ROLE_LABELS: Record<string, string> = {
   viewer: '只读访客',
 }
 
-const menus = [
+/** 全部菜单项。`roles` 为空表示所有登录用户可见。 */
+const allMenus = [
   { name: 'dashboard', title: '运行总览', icon: DataBoard },
   { name: 'knowledge', title: '知识库管理', icon: Files },
   { name: 'graph', title: '知识图谱', icon: Share },
   { name: 'chat', title: '智能问答', icon: ChatDotRound },
   { name: 'evaluation', title: '评估任务', icon: Checked },
   { name: 'judge', title: '质量评审', icon: Medal },
-  { name: 'system', title: '系统与审计', icon: Setting },
+  { name: 'users', title: '用户与授权', icon: UserFilled, roles: ['admin'] },
+  { name: 'system', title: '系统与审计', icon: Setting, roles: ['admin'] },
 ]
+
+/**
+ * 按角色过滤菜单。
+ * 与路由的 meta.roles 保持同一套规则 —— 菜单不显示点不进去的入口，
+ * 但真正的权限边界仍在后端（接口返回 403）。
+ */
+const menus = computed(() =>
+  allMenus.filter((m) => !m.roles || m.roles.includes(auth.user?.role ?? '')),
+)
 
 const roleLabel = computed(() => ROLE_LABELS[auth.user?.role ?? ''] ?? auth.user?.role ?? '-')
 
 const currentTitle = computed(() => {
   const meta = route.meta.title as string | undefined
   if (meta) return meta
-  const found = menus.find((m) => route.path.startsWith(`/${m.name}`))
+  const found = menus.value.find((m) => route.path.startsWith(`/${m.name}`))
   return found?.title ?? '运行总览'
 })
 

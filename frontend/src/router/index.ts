@@ -1,5 +1,6 @@
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router'
 import { tokenStore } from '@/api/http'
+import { useAuthStore } from '@/stores/auth'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -62,6 +63,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '质量评审', icon: 'Medal' },
       },
       {
+        path: 'users',
+        name: 'users',
+        component: () => import('@/views/UsersView.vue'),
+        meta: { title: '用户与授权', icon: 'UserFilled', roles: ['admin'] },
+      },
+      {
         path: 'system',
         name: 'system',
         component: () => import('@/views/SystemView.vue'),
@@ -78,13 +85,29 @@ const router = createRouter({
   scrollBehavior: () => ({ top: 0 }),
 })
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const isPublic = to.meta.public === true
   if (!isPublic && !tokenStore.access) {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
   if (isPublic && tokenStore.access && to.name === 'login') {
     return { name: 'dashboard' }
+  }
+
+  // 角色级访问控制：路由声明了 meta.roles 时校验当前用户角色。
+  // 注意这是**前端体验**层面的拦截，真正的权限边界在后端（接口会返回 403）；
+  // 这里只是避免用户点到无权访问的页面后看到一片空白或一堆报错。
+  const required = to.meta.roles as string[] | undefined
+  if (required?.length) {
+    const auth = useAuthStore()
+    // 刷新页面后 store 为空，需先拉取用户信息再判定
+    if (!auth.user) {
+      await auth.fetchProfile()
+    }
+    const role = auth.user?.role
+    if (!role || !required.includes(role)) {
+      return { name: 'dashboard' }
+    }
   }
   return true
 })

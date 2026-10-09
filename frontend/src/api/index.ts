@@ -429,3 +429,67 @@ export const systemApi = {
   config: () => api.get<Record<string, Record<string, unknown>>>('/admin/config'),
   rebuildIndex: () => api.post<Record<string, unknown>>('/admin/rebuild-index'),
 }
+
+// --------------------------------------------------------------------------- //
+// 用户与项目授权（管理员）
+// --------------------------------------------------------------------------- //
+/** 可分配的角色（与后端 ROLE_PERMISSIONS 的键一致） */
+export type AssignableRole = 'admin' | 'kb_manager' | 'engineer' | 'expert' | 'viewer'
+
+export interface ManagedUser {
+  id: number
+  username: string
+  full_name?: string | null
+  email?: string | null
+  phone?: string | null
+  role: AssignableRole | string
+  /** 授权访问的项目 ID。非管理员必须至少有一个，否则看不到任何项目数据。 */
+  project_ids: number[]
+  specialties: string[]
+  is_active: boolean
+  last_login_at?: string | null
+  created_at?: string | null
+}
+
+export interface ProjectItem {
+  id: number
+  code: string
+  name: string
+  specialty?: string | null
+  status: string
+}
+
+export interface UserCreatePayload {
+  username: string
+  password: string
+  full_name?: string | null
+  email?: string | null
+  phone?: string | null
+  role: AssignableRole
+  project_ids: number[]
+  specialties?: string[]
+}
+
+/** 当前用户的访问范围（用于「缺授权」提示） */
+export interface MyScope {
+  user_id?: number | null
+  username: string
+  role: string
+  is_admin: boolean
+  project_ids: number[]
+  accessible_kb_count?: number | null
+  /** 非空表示存在配置问题，需提示用户 */
+  warning?: string | null
+}
+
+export const usersApi = {
+  listProjects: () => api.get<ProjectItem[]>('/admin/projects'),
+  listUsers: (params: { page?: number; page_size?: number; keyword?: string }) =>
+    api.get<PageData<ManagedUser>>('/admin/users', params),
+  createUser: (payload: UserCreatePayload) => api.post<ManagedUser>('/admin/users', payload),
+  updateProjects: (userId: number, projectIds: number[]) =>
+    api.post<ManagedUser>(`/admin/users/${userId}/projects`, { project_ids: projectIds }),
+  updateStatus: (userId: number, isActive: boolean) =>
+    api.post<ManagedUser>(`/admin/users/${userId}/status`, { is_active: isActive }),
+  myScope: () => api.get<MyScope>('/me/scope'),
+}
