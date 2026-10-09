@@ -268,6 +268,9 @@ class EvalTask(Base, TimestampMixin):
     current_state: Mapped[str] = mapped_column(
         String(24), default=EvalState.PENDING.value, nullable=False
     )
+    #: 乐观锁版本号：人工裁定提交时带上期望版本，防止两人同时裁定同一任务。
+    #: 版本不匹配返回 409，提示刷新后重试（见 app/services/review.py）。
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     current_step: Mapped[Optional[str]] = mapped_column(String(32))
     iteration_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     no_progress_rounds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -435,8 +438,18 @@ class EvalReport(Base, TimestampMixin):
     basis_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     non_compliance_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     generator_model: Mapped[Optional[str]] = mapped_column(String(64))
+    # ---- 人工复核裁定（SRS 角色定义「复核与裁定、终审签发」）----
+    #: 人工裁定结论（HumanVerdict）。与 overall_verdict（机器结论）**并存**，
+    #: 不可互相覆盖：机器结论是 AI 质量的原始证据，人工裁定是责任判定。
+    #: 为空表示「尚未经人工裁定」—— 存量历史报告均为空，不要批量回填。
+    human_verdict: Mapped[Optional[str]] = mapped_column(String(16))
+    #: 裁定依据/说明（与逐条条款修订说明分开记录）
+    review_comment: Mapped[Optional[str]] = mapped_column(Text)
+    #: 最近一次签认人
     reviewed_by: Mapped[Optional[int]] = mapped_column(BigInteger)
+    #: 最近一次签认时间
     reviewed_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime(timezone=True))
+    #: 是否已签发生效（判定合格时为 True）。False = 草稿，不得作为正式依据。
     is_final: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     task: Mapped["EvalTask"] = relationship(back_populates="report")

@@ -19,7 +19,15 @@ from app.core.authz import (
     project_ids_of,
     visible_task_filter,
 )
-from app.constants import AuditAction, EvalState, REVIEWABLE_STATES
+from app.constants import (
+    JUDGE_GRADE_LABELS,
+    AuditAction,
+    EvalState,
+    JudgeGrade,
+    REVIEWABLE_STATES,
+    ReviewStatus,
+    review_status_of,
+)
 from app.core.errors import ConflictError, ForbiddenError, NotFoundError
 from app.core.logging_conf import get_logger
 from app.core.response import ok, paginate
@@ -34,7 +42,14 @@ from app.db.models import (
     MatchResult,
     User,
 )
-from app.schemas.api import EvalTaskCreate, FeedbackCreate, ResumeRequest
+from app.schemas.api import (
+    EvalTaskCreate,
+    FeedbackCreate,
+    ResumeRequest,
+    ReviewDecisionRequest,
+)
+from app.services.review import decide as review_decide
+from app.services.review import report_review_payload
 
 router = APIRouter(prefix="/eval", tags=["评估任务"])
 logger = get_logger(__name__)
@@ -236,7 +251,24 @@ def list_tasks(
     count_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
     total = int(session.execute(count_stmt).scalar() or 0)
     rows = session.execute(stmt.limit(page_size).offset((page - 1) * page_size)).scalars().all()
-    return ok(paginate([_task_out(t) for t in rows], total, page, page_size))
+
+    # 批量取复核状态，避免逐任务查询（N+1）。
+    # 列表上要能区分「待复核」与「已签发生效」—— 未签发的报告不得作为正式依据。
+    items = [_task_out(t) for t in rows]
+    if rows:
+        report_rows = session.execute(
+            select(EvalReport.task_id, EvalReport.human_verdict, EvalReport.is_final).where(
+                EvalReport.task_id.in_([t.id for t in rows])
+            )
+        ).all()
+        status_map = {
+            task_id: review_status_of(human_verdict, is_final).value
+            for task_id, human_verdict, is_final in report_rows
+        }
+        for item in items:
+            item["review_status"] = status_map.get(uuid.UUID(item["id"]), ReviewStatus.PENDING.value)
+
+    return ok(paginate(items, total, page, page_size))
 
 
 @router.get("/tasks/{task_id}", summary="查询任务状态与状态机快照（API-13）")
@@ -265,6 +297,15 @@ def get_task(task_id: uuid.UUID, session: DbSession, user: CurrentUser) -> dict:
         ).scalars().first()
 
     payload = _task_out(task)
+    # 人工裁定状态随任务详情返回：详情页需要并列展示「机器结论 / 人工裁定」
+    review_info = report_review_payload(task.report)
+    if task.report is not None and task.report.reviewed_by:
+        reviewer = session.get(User, task.report.reviewed_by)
+        if reviewer is not None:
+            review_info["reviewed_by_name"] = reviewer.full_name or reviewer.username
+    payload["review_status"] = review_info["review_status"]
+    payload["review"] = review_info
+    payload["version"] = int(task.version)
     payload.update(
         {
             "input_payload": task.input_payload,
@@ -381,6 +422,12 @@ def get_report(
             ],
         }
 
+    review_payload = report_review_payload(report)
+    if report.reviewed_by:
+        reviewer = session.get(User, report.reviewed_by)
+        if reviewer is not None:
+            review_payload["reviewed_by_name"] = reviewer.full_name or reviewer.username
+
     return ok(
         {
             "id": str(report.id),
@@ -395,10 +442,171 @@ def get_report(
             "non_compliance_count": report.non_compliance_count,
             "generator_model": report.generator_model,
             "is_final": report.is_final,
+            # 机器结论与人工裁定分栏返回，前端可对比展示（不合并、不覆盖）
+            "machine": {
+                "overall_verdict": report.overall_verdict,
+                "risk_level": report.risk_level,
+                "generator_model": report.generator_model,
+            },
+            "review": review_payload,
             "created_at": report.created_at,
             "judge": judge_payload,
         }
     )
+
+
+@router.post("/tasks/{task_id}/review", summary="提交人工复核裁定（合格 / 不合格，终审签发）")
+def decide_review(
+    request: Request,
+    task_id: uuid.UUID,
+    session: DbSession,
+    user: Annotated[User, require_permission("eval:review")],
+    background: BackgroundTasks,
+    body: ReviewDecisionRequest = Body(...),
+) -> dict:
+    """人工复核裁定 —— SRS 角色定义「复核与裁定、终审签发」。
+
+    判定**合格** → 报告 ``is_final=True`` 并签发，任务置 ``COMPLETED``，可作正式依据。
+    判定**不合格** → 不予签发；``rerun=True`` 驳回重跑（任务回 ``MATCHING``），
+    ``rerun=False`` 直接落定不合格。
+
+    机器结论（``overall_verdict``）**不被覆盖**：AI 结论是质量评估的原始证据，
+    人工裁定是责任判定，两者并存才能对比出「AI 判合格、人判不合格」这类关键分歧
+    （FR-JDG-06 反馈闭环所需样本）。
+    """
+    task = session.get(EvalTask, task_id)
+    if task is None:
+        raise NotFoundError(f"任务不存在：{task_id}")
+    # 归属校验：非管理员只能裁定本人发起或所属项目内的任务
+    assert_task_access(user, task)
+
+    result = review_decide(
+        session,
+        task=task,
+        reviewer=user,
+        verdict=body.verdict,
+        comment=body.comment,
+        rerun=body.rerun,
+        revisions=body.corrected_matches,
+        expected_version=body.expected_version,
+        ip=client_ip(request),
+    )
+    # 版本号自增，供前端下一次提交做乐观锁
+    task.version = int(task.version) + 1
+    session.commit()
+
+    # 驳回重跑：与 /resume 同一套后台执行机制，避免接口长时间阻塞
+    if result["rerun"]:
+        async def _job() -> None:
+            from app.db import session_scope
+
+            with session_scope() as inner:
+                inner_task = inner.get(EvalTask, task_id)
+                if inner_task is not None:
+                    await run_evaluation(inner, inner_task, resume=True)
+
+        background.add_task(_job)
+
+    result["version"] = int(task.version)
+    return ok(result)
+
+
+@router.get("/tasks/{task_id}/review", summary="查询人工复核裁定状态")
+def get_review(
+    task_id: uuid.UUID,
+    session: DbSession,
+    user: CurrentUser,
+) -> dict:
+    """查询任务的复核状态：机器结论、人工裁定、签发状态与签认人。"""
+    task = session.get(EvalTask, task_id)
+    if task is None:
+        raise NotFoundError(f"任务不存在：{task_id}")
+    assert_task_access(user, task)
+
+    report = session.execute(
+        select(EvalReport).where(EvalReport.task_id == task_id)
+    ).scalar_one_or_none()
+    payload = report_review_payload(report)
+    if report is not None and report.reviewed_by:
+        reviewer = session.get(User, report.reviewed_by)
+        if reviewer is not None:
+            payload["reviewed_by_name"] = reviewer.full_name or reviewer.username
+
+    return ok(
+        {
+            "task_id": str(task.id),
+            "report_id": str(report.id) if report else None,
+            "current_state": task.current_state,
+            "version": int(task.version),
+            "machine_verdict": report.overall_verdict if report else None,
+            # overall_verdict 存的是 JudgeGrade（优秀/良好/合格/不合格），
+            # 不是条款判定 Verdict（符合/不符合）—— 别套错枚举，否则取值会抛 ValueError
+            "machine_verdict_label": JUDGE_GRADE_LABELS.get(
+                JudgeGrade(report.overall_verdict), report.overall_verdict
+            )
+            if report and report.overall_verdict
+            else None,
+            "risk_level": report.risk_level if report else None,
+            **payload,
+        }
+    )
+
+
+@router.get("/reviews/pending", summary="待复核队列（后端分页）")
+def list_pending_reviews(
+    session: DbSession,
+    user: Annotated[User, require_permission("eval:review")],
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+) -> dict:
+    """待复核任务清单。
+
+    判定标准为「**尚无人工裁定**」的已出报告任务（``NEED_HUMAN`` / ``DEGRADED``），
+    不是「JudgeReview.needs_human 计数」—— 后者是历史累计（含已处理），
+    两者口径不同，曾造成「看板显示 3 个待复核、队列却是空的」的困惑。
+    """
+    base = (
+        select(EvalTask)
+        .outerjoin(EvalReport, EvalReport.task_id == EvalTask.id)
+        .where(EvalTask.current_state.in_([s.value for s in REVIEWABLE_STATES]))
+        .where(EvalReport.human_verdict.is_(None))
+    )
+    scope = visible_task_filter(user)
+    if scope is not None:
+        base = base.where(scope)
+
+    total = int(session.execute(select(func.count()).select_from(base.subquery())).scalar() or 0)
+    rows = (
+        session.execute(
+            base.order_by(EvalTask.finished_at.desc().nullslast(), EvalTask.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        .scalars()
+        .all()
+    )
+
+    items = []
+    for task in rows:
+        report = session.execute(
+            select(EvalReport).where(EvalReport.task_id == task.id)
+        ).scalar_one_or_none()
+        items.append(
+            {
+                "task_id": str(task.id),
+                "title": task.title,
+                "specialty": task.specialty,
+                "current_state": task.current_state,
+                "guard_reason": task.guard_reason,
+                "version": int(task.version),
+                "finished_at": task.finished_at,
+                "machine_verdict": report.overall_verdict if report else None,
+                "risk_level": report.risk_level if report else None,
+                "review_status": ReviewStatus.PENDING.value,
+            }
+        )
+
+    return ok(paginate(items, total=total, page=page, page_size=page_size))
 
 
 @router.post("/tasks/{task_id}/resume", summary="人工介入后继续执行（API-15）")

@@ -38,6 +38,17 @@
             </span>
           </template>
         </el-table-column>
+        <!-- 复核状态：区分「待复核」与「已签发生效」。未签发的报告不得作为正式依据。 -->
+        <el-table-column label="复核" width="120" align="center">
+          <template #default="{ row }">
+            <span v-if="row.review_status === 'signed'" class="tag tag--ok">已签发</span>
+            <span v-else-if="row.review_status === 'rejected'" class="tag tag--danger">不合格</span>
+            <span v-else-if="row.current_state === 'NEED_HUMAN' || row.current_state === 'DEGRADED'" class="tag tag--warn">
+              待复核
+            </span>
+            <span v-else class="muted small">-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="进度" width="140">
           <template #default="{ row }">
             <el-progress :percentage="Math.round((row.progress ?? 0) * 100)" :stroke-width="8" />

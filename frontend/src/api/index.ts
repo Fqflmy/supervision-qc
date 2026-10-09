@@ -266,6 +266,10 @@ export interface EvalTask {
   started_at?: string | null
   finished_at?: string | null
   created_at?: string | null
+  /** 报告复核状态：待复核 / 已签发 / 已复核不合格 */
+  review_status?: ReviewStatus
+  /** 乐观锁版本号（人工裁定时回传，防并发改判） */
+  version?: number
 }
 
 export interface EvalTaskDetail extends EvalTask {
@@ -429,8 +433,87 @@ export interface MetricsInfo {
   scope?: 'global' | 'visible'
 }
 
-export interface AuditLog {
-  id: number
+/** 人工复核裁定结论 */
+export type HumanVerdict = 'qualified' | 'unqualified'
+
+/** 报告复核状态（由 human_verdict + is_final 派生） */
+export type ReviewStatus = 'pending' | 'signed' | 'rejected'
+
+/** 人工裁定与签发状态 */
+export interface ReviewInfo {
+  human_verdict?: HumanVerdict | null
+  human_verdict_label?: string | null
+  review_comment?: string | null
+  reviewed_by?: number | null
+  reviewed_by_name?: string | null
+  reviewed_at?: string | null
+  is_final: boolean
+  review_status: ReviewStatus
+  review_status_label: string
+}
+
+export interface ReviewStatusInfo extends ReviewInfo {
+  task_id: string
+  report_id?: string | null
+  current_state: string
+  version: number
+  /** 机器结论（AI 生成，不被人工覆盖） */
+  machine_verdict?: string | null
+  machine_verdict_label?: string | null
+  risk_level?: string | null
+}
+
+export interface ReviewDecisionResult {
+  task_id: string
+  report_id: string
+  human_verdict: HumanVerdict
+  human_verdict_label: string
+  review_comment: string
+  reviewed_by?: number | null
+  reviewed_at?: string | null
+  is_final: boolean
+  current_state: string
+  /** 是否已驳回重跑（后台执行） */
+  rerun: boolean
+  revision_count: number
+  machine_verdict?: string | null
+  version: number
+}
+
+export interface PendingReviewItem {
+  task_id: string
+  title?: string | null
+  specialty?: string | null
+  current_state: string
+  guard_reason?: string | null
+  version: number
+  finished_at?: string | null
+  machine_verdict?: string | null
+  risk_level?: string | null
+  review_status: ReviewStatus
+}
+
+export const reviewApi = {
+  /**
+   * 提交人工复核裁定（FR-AGT-11 报告签发）。
+   * 判定不合格时必须给 comment；rerun 决定驳回重跑还是直接落定不合格。
+   */
+  decide: (
+    taskId: string,
+    payload: {
+      verdict: HumanVerdict
+      comment: string
+      rerun?: boolean
+      corrected_matches?: { match_id?: number; verdict?: string }[]
+      expected_version?: number
+    },
+  ) => api.post<ReviewDecisionResult>(`/eval/tasks/${taskId}/review`, payload),
+  status: (taskId: string) => api.get<ReviewStatusInfo>(`/eval/tasks/${taskId}/review`),
+  pending: (params: { page?: number; page_size?: number }) =>
+    api.get<PageData<PendingReviewItem>>('/eval/reviews/pending', params),
+}
+
+export interface AuditLog {  id: number
   trace_id?: string | null
   username?: string | null
   action: string

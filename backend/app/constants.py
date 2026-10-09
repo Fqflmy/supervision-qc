@@ -93,6 +93,59 @@ VERDICT_LABELS = {
 }
 
 
+class HumanVerdict(StrEnum):
+    """人工复核裁定（终审结论）。
+
+    SRS 角色定义（第 92 行）要求质量评估专家「复核与裁定、修订评分、**终审签发**」；
+    业务流程（第 142 行）为「专家复核**签发** → 报告归档 → 全链路留痕」。
+
+    ⚠️ 这是**人工**结论，与 ``EvalReport.overall_verdict``（机器结论）并存，
+    **不得互相覆盖** —— 机器结论是 AI 质量的原始证据（FR-JDG-06 反馈闭环、
+    模型迭代对比都要用），人工裁定是责任判定。两者不一致本身是重要样本。
+    """
+
+    QUALIFIED = "qualified"
+    UNQUALIFIED = "unqualified"
+
+
+HUMAN_VERDICT_LABELS = {
+    HumanVerdict.QUALIFIED: "合格",
+    HumanVerdict.UNQUALIFIED: "不合格",
+}
+
+
+class ReviewStatus(StrEnum):
+    """报告复核状态（展示用，由 human_verdict + is_final 派生）。"""
+
+    #: 待复核：处于可复核状态且尚无人工裁定
+    PENDING = "pending"
+    #: 已复核合格并签发（is_final=True，可作为正式依据）
+    SIGNED = "signed"
+    #: 已复核不合格（不予签发）
+    REJECTED = "rejected"
+
+
+REVIEW_STATUS_LABELS = {
+    ReviewStatus.PENDING: "待复核",
+    ReviewStatus.SIGNED: "已签发",
+    ReviewStatus.REJECTED: "已复核不合格",
+}
+
+
+def review_status_of(human_verdict: str | None, is_final: bool) -> ReviewStatus:
+    """由人工裁定与签发标记推导展示状态。
+
+    未裁定（``human_verdict`` 为 ``None``）一律视为待复核 ——
+    包括评分达标但未经人工确认的报告：**没有签发就不算正式报告**
+    （FR-JDG-05「不直接出具正式报告」的语义）。
+    """
+    if not human_verdict:
+        return ReviewStatus.PENDING
+    if human_verdict == HumanVerdict.QUALIFIED.value:
+        return ReviewStatus.SIGNED if is_final else ReviewStatus.PENDING
+    return ReviewStatus.REJECTED
+
+
 class RiskLevel(StrEnum):
     """风险等级（FR-AGT-06）。"""
 
@@ -230,6 +283,8 @@ class AuditAction(StrEnum):
     REPORT_EXPORT = "report_export"
     JUDGE_SCORE = "judge_score"
     CONFIG_CHANGE = "config_change"
+    #: 人工复核裁定与签发（FR-AGT-11 报告签发）
+    REPORT_REVIEW = "report_review"
 
 
 #: 错误码表（SRS 6.4）

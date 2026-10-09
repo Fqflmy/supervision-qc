@@ -139,6 +139,75 @@
       </div>
 
       <template v-if="report">
+        <!-- 人工裁定与签发（FR-AGT-11）：机器结论与人工裁定**并列展示、互不覆盖** -->
+        <div class="review-panel">
+          <div class="review-panel__col">
+            <div class="review-panel__title">机器结论<el-tag size="small" effect="plain" style="margin-left: 8px">AI 生成</el-tag></div>
+            <el-descriptions :column="1" size="small" border>
+              <el-descriptions-item label="总体结论">
+                <span v-if="report.overall_verdict" class="tag" :class="`tag--${verdictTone(report.overall_verdict)}`">
+                  {{ verdictLabel(report.overall_verdict) }}
+                </span>
+                <span v-else class="muted">-</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="风险等级">
+                <span class="tag" :class="`tag--${RISK_TONES[report.risk_level ?? ''] ?? 'muted'}`">
+                  {{ RISK_LABELS[report.risk_level ?? ''] ?? '-' }}
+                </span>
+              </el-descriptions-item>
+              <el-descriptions-item label="生成模型">{{ report.generator_model || '-' }}</el-descriptions-item>
+            </el-descriptions>
+          </div>
+
+          <div class="review-panel__col">
+            <div class="review-panel__title">
+              人工裁定
+              <el-tag size="small" :type="reviewTagType" effect="plain" style="margin-left: 8px">
+                {{ review?.review_status_label ?? '待复核' }}
+              </el-tag>
+            </div>
+            <el-descriptions :column="1" size="small" border>
+              <el-descriptions-item label="裁定结论">
+                <span v-if="review?.human_verdict" class="tag" :class="review!.human_verdict === 'qualified' ? 'tag--ok' : 'tag--danger'">
+                  {{ review!.human_verdict_label }}
+                </span>
+                <span v-else class="muted">尚未裁定</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="签认人">
+                {{ review?.reviewed_by_name || '-' }}
+                <span v-if="review?.reviewed_at" class="small muted"> · {{ fmtTime(review.reviewed_at) }}</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="是否签发">
+                <span v-if="review?.is_final" class="tag tag--ok">已签发生效</span>
+                <span v-else class="tag tag--warn">未签发（不得作为正式依据）</span>
+              </el-descriptions-item>
+              <el-descriptions-item v-if="review?.review_comment" label="裁定依据">
+                {{ review.review_comment }}
+              </el-descriptions-item>
+            </el-descriptions>
+
+            <!-- 只有具备复核权限的角色能裁定 -->
+            <div v-if="auth.canReview" style="margin-top: 10px; display: flex; gap: 8px">
+              <el-button type="success" :icon="Select" @click="openDecision('qualified')">判定合格</el-button>
+              <el-button type="danger" :icon="CloseBold" @click="openDecision('unqualified')">判定不合格</el-button>
+            </div>
+            <div v-else class="panel__hint" style="margin-top: 8px">
+              当前角色无复核裁定权限（需审核人员或管理员）。
+            </div>
+          </div>
+        </div>
+
+        <!-- 机器结论与人工裁定分歧提示：这正是 FR-JDG-06 需要的迭代样本 -->
+        <el-alert
+          v-if="diverged"
+          type="warning"
+          show-icon
+          :closable="false"
+          style="margin-bottom: 14px"
+          title="人工裁定与机器结论不一致"
+          description="该分歧将记入模型迭代样本（FR-JDG-06 反馈闭环），用于后续提示词与模型优化。"
+        />
+
         <el-descriptions :column="4" size="small" border style="margin-bottom: 14px">
           <el-descriptions-item label="依据条款数">{{ report.basis_count }}</el-descriptions-item>
           <el-descriptions-item label="问题项数">{{ report.non_compliance_count }}</el-descriptions-item>
@@ -245,11 +314,84 @@
       <div v-else class="empty">该任务尚未生成报告，请先执行评估</div>
     </div>
 
-    <!-- 人工复核 -->
-    <el-dialog v-model="reviewDialog" title="人工复核与续跑" width="620px">
+    <!-- 人工裁定（合格 / 不合格 + 终审签发） -->
+    <el-dialog
+      v-model="decisionDialog"
+      :title="decision.verdict === 'qualified' ? '判定合格并签发' : '判定不合格'"
+      width="640px"
+    >
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 12px"
+        :title="`机器结论：${report?.overall_verdict ? verdictLabel(report.overall_verdict) : '无'}`"
+        description="人工裁定不会覆盖机器结论，两者将并列留存以便对比（分歧会作为模型迭代样本）。"
+      />
+      <el-form label-width="100px">
+        <el-form-item label="裁定依据" :required="decision.verdict === 'unqualified'">
+          <el-input
+            v-model="decision.comment"
+            type="textarea"
+            :rows="3"
+            :placeholder="
+              decision.verdict === 'unqualified'
+                ? '必填：说明不合格的具体理由（如引用条款已废止、缺少材料复验记录）'
+                : '可选：如「已核对引用条款，同意 AI 结论」'
+            "
+          />
+        </el-form-item>
+
+        <!-- 判定不合格时选择处置方式 -->
+        <template v-if="decision.verdict === 'unqualified'">
+          <el-form-item label="处置方式">
+            <el-radio-group v-model="decision.rerun">
+              <el-radio :value="true">驳回重跑（带修订重新生成报告）</el-radio>
+              <el-radio :value="false">直接落定不合格（重跑无意义）</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item label="条款修订">
+            <div style="width: 100%">
+              <div v-for="(item, index) in decision.items" :key="index" class="review-row">
+                <el-select v-model="item.match_id" placeholder="选择条款匹配项" style="width: 100%">
+                  <el-option
+                    v-for="match in detail?.matches ?? []"
+                    :key="match.id"
+                    :label="`${match.spec_code ?? ''} ${match.clause_no ?? ''}（${verdictLabel(match.verdict)}）`"
+                    :value="match.id"
+                  />
+                </el-select>
+                <el-select v-model="item.verdict" placeholder="修订判定" style="width: 100%">
+                  <el-option v-for="(label, value) in VERDICT_LABELS" :key="value" :label="label" :value="value" />
+                </el-select>
+                <el-button link type="danger" @click="decision.items.splice(index, 1)">删除</el-button>
+              </div>
+              <el-button size="small" @click="decision.items.push({ match_id: undefined, verdict: 'non_compliant' })">
+                + 添加修订
+              </el-button>
+              <div class="panel__hint" style="margin-top: 4px">可选。修订会随本次裁定一并留痕。</div>
+            </div>
+          </el-form-item>
+        </template>
+      </el-form>
+
+      <template #footer>
+        <el-button @click="decisionDialog = false">取消</el-button>
+        <el-button
+          :type="decision.verdict === 'qualified' ? 'success' : 'danger'"
+          :loading="deciding"
+          @click="submitDecision"
+        >
+          {{ decision.verdict === 'qualified' ? '确认合格并签发' : '确认不合格' }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 终止任务（原「人工复核与续跑」保留：用于无法定论时中止） -->
+    <el-dialog v-model="reviewDialog" title="人工介入与续跑" width="620px">
       <el-form label-width="90px">
-        <el-form-item label="复核说明">
-          <el-input v-model="reviewComment" type="textarea" :rows="3" placeholder="说明修订原因，将写入 human_feedback 反馈闭环" />
+        <el-form-item label="说明">
+          <el-input v-model="reviewComment" type="textarea" :rows="3" placeholder="说明原因，将写入 human_feedback 反馈闭环" />
         </el-form-item>
         <el-form-item label="条款修订">
           <div style="width: 100%">
@@ -285,8 +427,17 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { evalApi, judgeApi, type EvalReport, type EvalTaskDetail } from '@/api'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { CloseBold, Select } from '@element-plus/icons-vue'
+import {
+  evalApi,
+  judgeApi,
+  reviewApi,
+  type EvalReport,
+  type EvalTaskDetail,
+  type HumanVerdict,
+  type ReviewStatusInfo,
+} from '@/api'
 import MarkdownView from '@/components/MarkdownView.vue'
 import { useAuthStore } from '@/stores/auth'
 import {
@@ -297,6 +448,7 @@ import {
   STEP_LABELS,
   VERDICT_LABELS,
   fmtScore,
+  fmtTime,
   stateLabel,
   stateTone,
   verdictLabel,
@@ -321,9 +473,114 @@ const reviewComment = ref('')
 const reviewItems = ref<{ match_id?: number; verdict: string }[]>([])
 const checkpointBackend = ref('-')
 
+// ---- 人工裁定与签发（FR-AGT-11）----
+/** 报告的人工裁定状态（机器结论仍在 report.overall_verdict 中，互不覆盖） */
+const review = ref<ReviewStatusInfo | null>(null)
+const decisionDialog = ref(false)
+const deciding = ref(false)
+const decision = ref<{
+  verdict: HumanVerdict
+  comment: string
+  rerun: boolean
+  items: { match_id?: number; verdict: string }[]
+}>({ verdict: 'qualified', comment: '', rerun: true, items: [] })
+
+/** 裁定状态徽标样式 */
+const reviewTagType = computed(() => {
+  const status = review.value?.review_status
+  if (status === 'signed') return 'success'
+  if (status === 'rejected') return 'danger'
+  return 'warning'
+})
+
+/**
+ * 人工裁定与机器结论是否分歧。
+ * 这正是 FR-JDG-06 需要的迭代样本 —— 所以在界面上明确提示，而不是默默记录。
+ */
+const diverged = computed(() => {
+  const human = review.value?.human_verdict
+  const machine = report.value?.overall_verdict
+  if (!human || !machine) return false
+  // 机器「不合格」对应人工「不合格」不算分歧；其余组合不一致即为分歧
+  return human === 'unqualified' ? machine !== 'unqualified' : machine === 'unqualified'
+})
+
 const canReviewAction = computed(
   () => ['NEED_HUMAN', 'DEGRADED'].includes(detail.value?.current_state ?? '') && auth.canReview,
 )
+
+/** 加载人工裁定状态（未裁定时接口也返回 pending，不报错） */
+async function loadReview() {
+  try {
+    review.value = await reviewApi.status(taskId)
+  } catch {
+    // 无报告时接口 404 属正常，不打扰用户
+    review.value = null
+  }
+}
+
+function openDecision(verdict: HumanVerdict) {
+  decision.value = {
+    verdict,
+    comment: '',
+    // 判定不合格默认驳回重跑；「直接落定」由用户显式选择
+    rerun: true,
+    items: [],
+  }
+  decisionDialog.value = true
+}
+
+async function submitDecision() {
+  const { verdict, comment, rerun, items } = decision.value
+
+  // 判定不合格必须说明依据 —— 与后端校验一致，前端先拦一道给出更好的提示
+  if (verdict === 'unqualified' && !comment.trim()) {
+    ElMessage.warning('判定不合格必须填写裁定依据')
+    return
+  }
+  if (verdict === 'qualified' && !comment.trim()) {
+    decision.value.comment = '同意 AI 结论，予以签发'
+  }
+
+  // 改判（报告已签发过）需要二次确认
+  if (review.value?.is_final && verdict === 'unqualified') {
+    try {
+      await ElMessageBox.confirm(
+        '该报告此前已签发生效。改判为不合格将撤销签发，历次裁定记录会保留。确认继续？',
+        '撤销签发确认',
+        { type: 'warning', confirmButtonText: '确认改判', cancelButtonText: '取消' },
+      )
+    } catch {
+      return
+    }
+  }
+
+  deciding.value = true
+  try {
+    const result = await reviewApi.decide(taskId, {
+      verdict,
+      comment: decision.value.comment,
+      rerun: verdict === 'unqualified' ? rerun : undefined,
+      corrected_matches: items.filter((i) => i.match_id).map((i) => ({ match_id: i.match_id, verdict: i.verdict })),
+      expected_version: review.value?.version,
+    })
+
+    if (result.human_verdict === 'qualified') {
+      ElMessage.success('已判定合格并签发，报告可作为正式依据')
+    } else if (result.rerun) {
+      ElMessage.success('已判定不合格，任务已驳回重跑（后台执行，稍后刷新查看）')
+    } else {
+      ElMessage.warning('已判定不合格，报告不予签发')
+    }
+
+    decisionDialog.value = false
+    await Promise.all([load(), loadReport(true), loadReview()])
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '裁定失败')
+  } finally {
+    deciding.value = false
+  }
+}
 
 async function load() {
   loading.value = true
@@ -343,14 +600,18 @@ async function loadReport(silent = false) {
   // silent=true 用于首屏探测：报告尚未生成属于正常情况，不弹提示也不留 404 噪音
   if (!detail.value?.report_id) {
     report.value = null
+    review.value = null
     if (!silent) ElMessage.info('该任务尚未生成报告，请先执行评估')
     return
   }
   reportLoading.value = true
   try {
     report.value = await evalApi.report(taskId)
+    // 报告加载成功后同步拉取人工裁定状态（两者在同一面板并列展示）
+    await loadReview()
   } catch (err) {
     report.value = null
+    review.value = null
     if (!silent) ElMessage.warning(err instanceof Error ? err.message : '暂无报告')
   } finally {
     reportLoading.value = false
@@ -457,5 +718,35 @@ onMounted(async () => {
   gap: 8px;
   align-items: center;
   margin-bottom: 8px;
+}
+
+/* 机器结论与人工裁定并列展示：两者是不同来源的判定，视觉上必须分开 */
+.review-panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.review-panel__col {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--surface-2, #fafafa);
+}
+
+.review-panel__title {
+  display: flex;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-900);
+  margin-bottom: 8px;
+}
+
+@media (max-width: 1100px) {
+  .review-panel {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

@@ -280,6 +280,8 @@ npm run dev
 | `& $py -m pytest tests\test_role_matrix.py` | **角色权限矩阵**（前后端权限一致 / 各角色菜单契约 / 指标口径） | 通过（6 项） |
 | `& $py -m pytest tests\test_schema_bootstrap.py` | **结构初始化与启动顺序**（入口顺序/镜像内容/存量库纳管） | 通过（8 项） |
 | `& $py -m pytest tests\test_authz_write_actions.py` | **写操作鉴权**（只读不得触发执行/提交复核；单项目自动归属） | 通过（7 项） |
+| `& $py -m pytest tests\test_human_review.py` | **人工复核裁定与签发**（合格/不合格、不覆盖机器结论、乐观锁、留痕） | 通过（15 项） |
+| `& $py scripts\verify_review_e2e.py http://127.0.0.1:8000` | **复核裁定端到端**（含签发、驳回重跑、权限、分歧样本） | 通过（31 项） |
 | `& $py scripts\check_schema.py` | **结构自查**（判定全新库 / 存量库未纳管 / 已纳管） | 通过 |
 | `& $py scripts\shot_roles.py` | **逐角色界面截图**（核验菜单集合与落地页） | 通过（4 角色） |
 | `& $py -m pytest tests\test_metrics_endpoint.py` | **指标端点与抓取鉴权**（Prometheus 文本格式） | 通过（20 项） |
@@ -460,6 +462,7 @@ docker compose exec -T api python /app/scripts/fix_checkpoint_locks.py --fix    
 | `docs/上线流程与就绪度评估.md` | **上线流程**：七阶段上线路径、缺口清单与工作量、安全评审、演练项、灰度与验收、组织合规事项、可勾选检查清单 |
 | `docs/角色权限审计与设计说明.md` | **角色权限**：四个角色的职责与能力矩阵、实测发现的问题（含越权与可用性缺口）、修复计划 |
 | `docs/修改建议-第二轮.md` | **修改建议（现行）**：2 个 P0（工程师发不起评估、复核接口越权）、3 个 P1、5 个 P2，含实施顺序与工作量 |
+| `docs/人工复核整改方案.md` | **人工复核整改**：补齐「合格/不合格裁定」与「终审签发」（SRS 要求但实现缺失），含数据模型、接口、界面、迁移与决策点 |
 | [需求规格说明书 SRS](docs/工程监理质量智能评估系统-需求规格说明书SRS.md) | 需求基线（63 条功能需求、状态机、接口清单、验收标准） |
 | `README.md`（本文） | 架构说明、快速开始、验证方式、常见问题、已知限制 |
 | [LICENSE](LICENSE) | MIT 许可证 |

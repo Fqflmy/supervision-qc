@@ -455,10 +455,54 @@ class HealthOut(BaseModel):
     components: dict[str, Any] = Field(default_factory=dict)
 
 
+class ReviewDecisionRequest(BaseModel):
+    """人工复核裁定请求（FR-AGT-11 报告签发）。
+
+    判定「不合格」时 ``comment`` 必填（裁定依据），``rerun`` 决定如何处置：
+    ``True`` 驳回重跑（任务回 MATCHING 重新生成报告）、
+    ``False`` 直接落定不合格（任务终结但不签发）。
+    """
+
+    #: qualified / unqualified —— 用 pattern 做枚举校验，避免自由字符串
+    verdict: str = Field(..., pattern="^(qualified|unqualified)$")
+    #: 裁定依据/说明。判定不合格时必填（服务层二次校验）
+    comment: str = Field("", max_length=2000)
+    #: 判定不合格时：是否驳回重跑
+    rerun: bool = False
+    #: 逐条条款判定修订（可选）
+    corrected_matches: list[dict[str, Any]] = Field(default_factory=list)
+    #: 乐观锁：期望的任务版本号，防止两人同时裁定
+    expected_version: Optional[int] = None
+
+
+class ReviewStatusResponse(BaseModel):
+    """报告复核状态与裁定结果。"""
+
+    task_id: str
+    report_id: Optional[str] = None
+    current_state: str
+    #: 机器结论（AI 生成，不被人工覆盖）
+    machine_verdict: Optional[str] = None
+    machine_verdict_label: Optional[str] = None
+    risk_level: Optional[str] = None
+    #: 人工裁定
+    human_verdict: Optional[str] = None
+    human_verdict_label: Optional[str] = None
+    review_comment: Optional[str] = None
+    reviewed_by: Optional[int] = None
+    reviewed_by_name: Optional[str] = None
+    reviewed_at: Optional[dt.datetime] = None
+    is_final: bool = False
+    review_status: str = "pending"
+    review_status_label: str = "待复核"
+    version: int = 1
+
+
 class FeedbackCreate(BaseModel):
     report_id: Optional[str] = None
     task_id: Optional[str] = None
-    action: str = Field(..., max_length=32)
+    #: 反馈动作。限定取值，避免写入无意义字符串（整体裁定走 /review 接口）
+    action: str = Field(..., pattern="^(correct_match|confirm|reject|amend)$")
     dimension: Optional[str] = None
     original_value: Optional[dict[str, Any]] = None
     corrected_value: Optional[dict[str, Any]] = None

@@ -89,31 +89,88 @@
         </div>
       </div>
       <el-table :data="pending" size="small" empty-text="当前没有待复核任务">
-        <el-table-column prop="title" label="任务" min-width="220" show-overflow-tooltip />
-        <el-table-column label="状态" width="120">
+        <el-table-column prop="title" label="任务" min-width="200" show-overflow-tooltip />
+        <el-table-column label="状态" width="110">
           <template #default="{ row }">
             <span class="tag" :class="`tag--${stateTone(row.current_state)}`">
               {{ stateLabel(row.current_state) }}
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="转复核原因" min-width="220" show-overflow-tooltip>
+        <el-table-column label="机器结论" width="100" align="center">
+          <template #default="{ row }">
+            <span v-if="row.machine_verdict" class="tag tag--info">
+              {{ GRADE_LABELS[row.machine_verdict] ?? row.machine_verdict }}
+            </span>
+            <span v-else class="muted">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="转复核原因" min-width="180" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="small muted">{{ row.guard_reason || 'Judge 评分低于阈值' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="完成时间" width="160">
+        <el-table-column label="完成时间" width="150">
           <template #default="{ row }">
             <span class="small muted">{{ row.finished_at ? fmtTime(row.finished_at) : '-' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="110" align="right">
+        <!-- 行内直接裁定：审核人员看到队列就能立刻给出结论，不必先进详情 -->
+        <el-table-column label="裁定" width="190" align="right">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="open(row.id)">去复核</el-button>
+            <el-button link type="success" size="small" @click="openDecision(row.task_id, 'qualified', row.version)">
+              判定合格
+            </el-button>
+            <el-button link type="danger" size="small" @click="openDecision(row.task_id, 'unqualified', row.version)">
+              判定不合格
+            </el-button>
+            <el-button link type="primary" size="small" @click="open(row.task_id)">详情</el-button>
           </template>
         </el-table-column>
       </el-table>
     </section>
+
+    <!-- 裁定对话框（与任务详情页共用接口） -->
+    <el-dialog
+      v-model="decisionDialog"
+      :title="decision.verdict === 'qualified' ? '判定合格并签发' : '判定不合格'"
+      width="560px"
+    >
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 12px"
+        title="人工裁定不覆盖机器结论"
+        description="两者将并列留存以便对比；判定不合格需填写依据，该分歧会作为模型迭代样本。"
+      />
+      <el-form label-width="90px">
+        <el-form-item label="裁定依据" :required="decision.verdict === 'unqualified'">
+          <el-input
+            v-model="decision.comment"
+            type="textarea"
+            :rows="3"
+            :placeholder="decision.verdict === 'unqualified' ? '必填：说明不合格的具体理由' : '可选'"
+          />
+        </el-form-item>
+        <el-form-item v-if="decision.verdict === 'unqualified'" label="处置方式">
+          <el-radio-group v-model="decision.rerun">
+            <el-radio :value="true">驳回重跑</el-radio>
+            <el-radio :value="false">直接落定不合格</el-radio>
+          </el-radio-group>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="decisionDialog = false">取消</el-button>
+        <el-button
+          :type="decision.verdict === 'qualified' ? 'success' : 'danger'"
+          :loading="deciding"
+          @click="submitDecision"
+        >
+          {{ decision.verdict === 'qualified' ? '确认合格并签发' : '确认不合格' }}
+        </el-button>
+      </template>
+    </el-dialog>
 
     <section class="panel">
       <div class="panel__head">
@@ -163,10 +220,18 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { evalApi, judgeApi, type EvalTask, type EvalTaskDetail, type JudgeDashboard } from '@/api'
+import {
+  evalApi,
+  judgeApi,
+  reviewApi,
+  type EvalTaskDetail,
+  type HumanVerdict,
+  type JudgeDashboard,
+  type PendingReviewItem,
+} from '@/api'
 import {
   DIMENSION_LABELS,
   GRADE_LABELS,
@@ -174,14 +239,26 @@ import {
   fmtTime,
   stateLabel,
   stateTone,
+  verdictLabel,
 } from '@/utils/format'
 
 const router = useRouter()
 const dashboard = ref<JudgeDashboard | null>(null)
 const tasks = ref<EvalTaskDetail[]>([])
 /** 待复核队列（审核人员的工作面） */
-const pending = ref<EvalTask[]>([])
+const pending = ref<PendingReviewItem[]>([])
 const loading = ref(false)
+
+// ---- 行内裁定 ----
+const decisionDialog = ref(false)
+const deciding = ref(false)
+const decisionTaskId = ref<string | null>(null)
+const decisionVersion = ref<number | undefined>(undefined)
+const decision = ref<{ verdict: HumanVerdict; comment: string; rerun: boolean }>({
+  verdict: 'qualified',
+  comment: '',
+  rerun: true,
+})
 
 function gradeTone(grade?: string | null) {
   if (grade === 'excellent' || grade === 'good') return 'tag--ok'
@@ -219,25 +296,64 @@ async function load() {
 /**
  * 拉取待复核队列。
  *
- * 后端已支持 `GET /eval/tasks?state=NEED_HUMAN`，但审核人员此前只能自己去
- * 评估任务页手筛状态 —— 而该页已按职责从审核角色菜单中移除。
- * 因此必须在这里给出直接入口，否则「待人工复核 3 个」只是个数字、无法落地。
- *
- * DEGRADED 同样计入：降级任务也需要人工确认。
+ * 使用后端 `GET /eval/reviews/pending`：其判定标准是「**尚无人工裁定**」的
+ * 已出报告任务，与看板的 `needs_human_count`（历史累计被标记的评审记录，含已处理）
+ * 是**不同口径** —— 之前用前端筛状态会导致「看板显示 3 个、队列却是空的」的困惑。
+ * 改为后端统一口径后，两者含义在界面上也分别标注清楚。
  */
 async function loadPending() {
   try {
-    const [needHuman, degraded] = await Promise.all([
-      evalApi.list({ page: 1, page_size: 50, state: 'NEED_HUMAN' }),
-      evalApi.list({ page: 1, page_size: 50, state: 'DEGRADED' }),
-    ])
-    const merged = [...needHuman.items, ...degraded.items]
-    // 按完成时间倒序，最近触发的排前面
-    merged.sort((a, b) => String(b.finished_at ?? '').localeCompare(String(a.finished_at ?? '')))
-    pending.value = merged
+    const result = await reviewApi.pending({ page: 1, page_size: 50 })
+    pending.value = result.items
   } catch {
     // 队列加载失败不阻塞看板；用户可点刷新重试
     pending.value = []
+  }
+}
+
+/** 打开裁定对话框（与任务详情页同一套接口） */
+function openDecision(taskId: string, verdict: HumanVerdict, version: number) {
+  decisionTaskId.value = taskId
+  decisionVersion.value = version
+  decision.value = { verdict, comment: '', rerun: true }
+  decisionDialog.value = true
+}
+
+async function submitDecision() {
+  const taskId = decisionTaskId.value
+  if (!taskId) return
+  const { verdict, comment, rerun } = decision.value
+
+  if (verdict === 'unqualified' && !comment.trim()) {
+    ElMessage.warning('判定不合格必须填写裁定依据')
+    return
+  }
+  if (verdict === 'qualified' && !comment.trim()) {
+    decision.value.comment = '同意 AI 结论，予以签发'
+  }
+
+  deciding.value = true
+  try {
+    await reviewApi.decide(taskId, {
+      verdict,
+      comment: decision.value.comment,
+      rerun: verdict === 'unqualified' ? rerun : undefined,
+      expected_version: decisionVersion.value,
+    })
+    if (verdict === 'qualified') {
+      ElMessage.success('已判定合格并签发')
+    } else if (rerun) {
+      ElMessage.success('已判定不合格，任务已驳回重跑')
+    } else {
+      ElMessage.warning('已判定不合格，报告不予签发')
+    }
+    decisionDialog.value = false
+    // 看板数字与队列都要刷新（裁定会同时影响两者）
+    await load()
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '裁定失败')
+  } finally {
+    deciding.value = false
   }
 }
 
