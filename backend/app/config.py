@@ -222,6 +222,12 @@ class Settings(BaseSettings):
     seed_default_admin_password: str = "Admin@12345"
     #: 是否强制首次登录修改密码
     force_password_change_on_first_login: bool = False
+    #: Prometheus 抓取指标时使用的 Bearer 令牌。设置后 /metrics 只接受携带该令牌的请求。
+    #: 生产环境推荐启用（Prometheus 不会带 JWT，原 /api/v1/metrics 因此永远 401）。
+    metrics_bearer_token: str = ""
+    #: 是否允许匿名抓取 /metrics。仅适合内网或开发环境；
+    #: 生产环境应改用 metrics_bearer_token，否则端点返回 403 并提示配置方式。
+    metrics_public: bool = False
     #: 逗号分隔字符串；用 settings.cors_origin_list 取列表
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080"
 

@@ -17,10 +17,18 @@
 
 name: supervision-infra
 
+# 日志轮转：与全栈编排保持一致的策略，避免长期运行写满磁盘。
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-supervision}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-supervision}
@@ -47,6 +55,7 @@ services:
   neo4j:
     image: neo4j:5.20.0
     restart: unless-stopped
+    logging: *default-logging
     environment:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-supervision123}
       NEO4J_server_memory_heap_initial__size: 512m
@@ -73,6 +82,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "6379:6379"
     volumes:

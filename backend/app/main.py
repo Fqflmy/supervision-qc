@@ -13,7 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.routes import admin, auth, eval, judge, knowledge, retrieval, users
+from app.api.routes import admin, auth, eval, judge, knowledge, metrics, retrieval, users
 from app.config import settings
 from app.constants import ERROR_CODES
 from app.core.errors import AppError
@@ -43,6 +43,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     assert_production_safe(settings)
     for tip in auth_security_warnings(settings):
         logger.warning("安全提示", extra={"item": tip, "environment": settings.environment})
+
+    # 指标抓取配置提示：生产环境未配置令牌会导致 Prometheus 持续 403、
+    # 面板一片空白，而这属于「配置缺了但服务照常启动」的静默故障，必须在启动日志里明说。
+    from app.api.routes.metrics import metrics_config_warning
+
+    metrics_tip = metrics_config_warning()
+    if metrics_tip:
+        logger.warning("可观测性提示", extra={"item": metrics_tip, "environment": settings.environment})
 
     started = time.perf_counter()
     db_ok = init_db()
@@ -217,6 +225,12 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
 # --------------------------------------------------------------------------- #
 for router_module in (auth, knowledge, retrieval, eval, judge, admin, users):
     app.include_router(router_module.router, prefix=settings.api_prefix)
+
+# Prometheus 指标端点**不加 API 前缀**：
+# - 抓取方是 Prometheus，不是前端，路径越短越稳定；
+# - 它也刻意不放进 OpenAPI 文档（include_in_schema=False）。
+# 注意它走的是根路径 /metrics，与 /api/v1/metrics（前端用的 JSON 版）并存。
+app.include_router(metrics.router)
 
 
 @app.get("/", include_in_schema=False)

@@ -1,11 +1,48 @@
+# Prometheus 抓取配置
+#
+# 修复记录（重要）
+# ----------------
+# 原先抓的是 `/api/v1/health`，返回统一响应包络：
+#     {"code":0,"message":"success","data":{...},"trace_id":"..."}
+# Prometheus **不支持 JSON**，抓到的内容一行都解析不出来；
+# 而真正的业务指标 `/api/v1/metrics` 又需要 JWT —— Prometheus 不会带令牌，
+# 抓取必然 401。结果是：面板看起来在跑，业务指标实际一条都没有。
+#
+# 现在改为抓取专用的文本格式端点 `/metrics`（位于 API 前缀之外，不进 OpenAPI 文档），
+# 并携带 Bearer 令牌。
+#
+# 令牌如何传递
+# ------------
+# 本文件支持 ${VAR} 环境变量展开（Prometheus 2.31+）。令牌来自 compose 传给
+# prometheus 容器的 METRICS_BEARER_TOKEN，与 api 容器的
+# SUPERVISION_METRICS_BEARER_TOKEN 同源（都取自 deploy/.env 的 METRICS_BEARER_TOKEN），
+# 因此只需配置一处：
+#
+#     METRICS_BEARER_TOKEN=<强随机串>
+#
+# 开发环境不想配令牌时，可设 api 的 SUPERVISION_METRICS_PUBLIC=true，
+# 此时令牌为空、api 端会放行匿名抓取。
+#
+# 生成令牌：
+#     python -c "import secrets;print(secrets.token_urlsafe(32))"
+
 global:
   scrape_interval: 15s
   evaluation_interval: 30s
+  external_labels:
+    service: supervision-qc
 
 scrape_configs:
   - job_name: supervision-api
-    metrics_path: /api/v1/health
+    # 关键修正：文本格式指标端点。
+    # 注意不是 /api/v1/health（JSON 包络），也不是 /api/v1/metrics（JSON 且需登录）。
+    metrics_path: /metrics
+    scrape_timeout: 10s
+    authorization:
+      type: Bearer
+      credentials: "${METRICS_BEARER_TOKEN}"
     static_configs:
       - targets: ["api:8000"]
         labels:
           service: supervision-api
+          component: backend

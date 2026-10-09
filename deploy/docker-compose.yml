@@ -6,12 +6,25 @@
 
 name: supervision-qc
 
+# 日志轮转策略（所有服务统一引用本锚点）。
+#
+# 为什么必须配：Docker 默认的 json-file 驱动**不限大小**，长期运行会把磁盘写满。
+# 本项目 api 会为每次请求、每次 LLM 调用写结构化日志，写入量不小；
+# 出问题时日志是主要排查依据，所以保留但限制总量：
+# 单文件 50MB × 5 个 = 每服务最多 250MB，磁盘占用可控。
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
 services:
   # --------------------------- 数据层 --------------------------- #
   postgres:
     image: postgres:16-alpine
     container_name: supervision-postgres
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-supervision}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-supervision}
@@ -31,6 +44,7 @@ services:
     image: neo4j:5.20.0
     container_name: supervision-neo4j
     restart: unless-stopped
+    logging: *default-logging
     environment:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-supervision123}
       NEO4J_PLUGINS: '["apoc"]'
@@ -52,6 +66,7 @@ services:
     image: redis:7-alpine
     container_name: supervision-redis
     restart: unless-stopped
+    logging: *default-logging
     command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
     volumes:
       - redis_data:/data
@@ -66,6 +81,7 @@ services:
     image: minio/minio:latest
     container_name: supervision-minio
     restart: unless-stopped
+    logging: *default-logging
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
@@ -93,6 +109,7 @@ services:
     container_name: supervision-embedding
     profiles: ["local-models"]
     restart: unless-stopped
+    logging: *default-logging
     command: ["python", "scripts/serve_embedding.py", "--port", "8510"]
     environment:
       SUPERVISION_EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-m3}
@@ -117,6 +134,7 @@ services:
     container_name: supervision-reranker
     profiles: ["local-models"]
     restart: unless-stopped
+    logging: *default-logging
     command: ["python", "scripts/serve_reranker.py", "--port", "8520"]
     environment:
       SUPERVISION_RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
@@ -139,6 +157,7 @@ services:
       dockerfile: Dockerfile
     container_name: supervision-api
     restart: unless-stopped
+    logging: *default-logging
     environment:
       SUPERVISION_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-supervision}:${POSTGRES_PASSWORD:-supervision}@postgres:5432/${POSTGRES_DB:-supervision}
       SUPERVISION_NEO4J_URI: bolt://neo4j:7687
@@ -176,6 +195,14 @@ services:
       SUPERVISION_CORS_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
       SUPERVISION_LOG_JSON: "true"
       SUPERVISION_DATA_DIR: /app/var
+      # Prometheus 抓取 /metrics 时携带的 Bearer 令牌。
+      # 背景：原配置抓的是 /api/v1/health（返回 JSON 包络），而 Prometheus
+      # 不支持 JSON；/api/v1/metrics 又需要 JWT（Prometheus 不会带令牌），
+      # 所以业务指标实际一条都没采到。现在改为独立的文本格式端点 /metrics。
+      # 生产环境务必改成强随机值，并同步 deploy/.env 的 METRICS_BEARER_TOKEN。
+      SUPERVISION_METRICS_BEARER_TOKEN: ${METRICS_BEARER_TOKEN:-}
+      # 是否允许匿名抓取 /metrics。仅内网/开发可设 true；生产用上面的令牌。
+      SUPERVISION_METRICS_PUBLIC: ${METRICS_PUBLIC:-false}
       # true=启动时幂等写入示例规范并建立索引；false=只起服务
       SUPERVISION_AUTO_SEED: ${AUTO_SEED:-true}
       TZ: Asia/Shanghai
@@ -204,6 +231,7 @@ services:
         VITE_API_BASE_URL: /api/v1
     container_name: supervision-web
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "${WEB_PORT:-8080}:80"
     depends_on:
@@ -216,6 +244,19 @@ services:
     image: prom/prometheus:latest
     container_name: supervision-prometheus
     restart: unless-stopped
+    logging: *default-logging
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      # 默认只保留 15 天；按需调大
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    environment:
+      # prometheus.yml 用 ${METRICS_BEARER_TOKEN} 做环境变量展开，
+      # 因此该变量必须传进容器（与 api 的令牌同源，都取自 deploy/.env）。
+      METRICS_BEARER_TOKEN: ${METRICS_BEARER_TOKEN:-}
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prom_data:/prometheus
@@ -225,8 +266,13 @@ services:
     image: grafana/grafana:latest
     container_name: supervision-grafana
     restart: unless-stopped
+    logging: *default-logging
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      # 关闭匿名访问：面板含业务数据（任务量、Token 消耗），不应免登录可见
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
     volumes:
       - grafana_data:/var/lib/grafana
     networks: [supervision]
