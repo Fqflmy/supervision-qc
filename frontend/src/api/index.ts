@@ -26,11 +26,29 @@ export interface LoginResult {
   user: User
 }
 
+/** 登录页可选的身份（演示环境） */
+export interface DemoIdentity {
+  role: string
+  label: string
+  description: string
+  /** 登录后默认跳转的路由名 */
+  home: string
+  username: string
+  password: string
+}
+
+export interface DemoIdentityResult {
+  enabled: boolean
+  identities: DemoIdentity[]
+}
+
 export const authApi = {
   login: (username: string, password: string) =>
     api.post<LoginResult>('/auth/login', { username, password }),
   me: () => api.get<User>('/auth/me'),
   logout: () => api.post<{ message: string }>('/auth/logout'),
+  /** 获取演示身份。生产环境返回 enabled=false，登录页不显示选择器。 */
+  demoIdentities: () => api.get<DemoIdentityResult>('/auth/demo-identities'),
 }
 
 // --------------------------------------------------------------------------- //

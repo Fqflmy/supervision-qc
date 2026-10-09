@@ -276,6 +276,7 @@ npm run dev
 | `& $py -m pytest tests\test_isolation_api.py` | **越权回归**（A 项目用户无法读 B 项目任务/报告/规范库） | 通过（12 项） |
 | `& $py -m pytest tests\test_agent_tools.py` | **工具调用权限**（工具级授权/参数校验/调用审计） | 通过（21 项） |
 | `& $py -m pytest tests\test_user_management_api.py` | **用户与项目授权管理** | 通过（9 项） |
+| `& $py -m pytest tests\test_demo_login.py` | **登录身份选择**（生产关闭/角色对应/不可提权） | 通过（6 项） |
 | `& $py -m pytest tests\test_metrics_endpoint.py` | **指标端点与抓取鉴权**（Prometheus 文本格式） | 通过（20 项） |
 | `& $py -m pytest tests\test_tracing.py` | **链路追踪**（优雅关闭/空操作/形状压缩/接入点） | 通过（15 项） |
 | `& $py scripts\verify_langsmith.py` | **LangSmith 接入验证**（Key 有效性 + 数据可查回） | 通过 |

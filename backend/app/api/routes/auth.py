@@ -93,6 +93,71 @@ def refresh(session: DbSession, body: RefreshRequest = Body(...)) -> dict:
     )
 
 
+@router.get("/demo-identities", summary="演示身份列表（登录页快速选择）")
+def demo_identities() -> dict:
+    """返回可用于快速登录的演示账号。
+
+    ⚠️ **安全说明（改动前务必理解）**
+
+    本接口只服务于「演示/开发环境的登录便利」：选择身份仅影响
+    *填入哪套凭据* 与 *登录后默认跳转哪个页面*，
+    **绝不决定权限** —— 权限始终由服务端账号（``sys_user.role`` +
+    ``sys_user.project_ids``）决定，客户端无法通过任何参数提升角色。
+    登录成功后仍以账号在库中的真实角色为准，前端菜单与路由拦截也据此渲染。
+
+    为避免把可用凭据暴露到生产环境：仅当 ``seed_default_admin=true``
+    （即种子数据确实会创建这些账号）时才返回；生产环境应设为 false，
+    本接口随即返回空列表，登录页不再显示身份选择。
+    """
+    import os
+
+    # 额外兜底：显式配置为生产环境时一律不返回，避免漏改 seed_default_admin
+    if (settings.environment or "dev").strip().lower() == "production":
+        return ok({"enabled": False, "identities": []})
+    if not settings.seed_default_admin:
+        return ok({"enabled": False, "identities": []})
+    # 允许用环境变量强制关闭（无需改动数据库种子配置）
+    if os.environ.get("SUPERVISION_DEMO_LOGIN", "").strip().lower() in {"false", "0", "no"}:
+        return ok({"enabled": False, "identities": []})
+
+    password = settings.seed_default_admin_password
+    identities = [
+        {
+            "role": "engineer",
+            "label": "监理工程师",
+            "description": "上传规范、发起质量评估",
+            "home": "evaluation",
+            "username": "engineer",
+            "password": password,
+        },
+        {
+            "role": "expert",
+            "label": "审核人员",
+            "description": "人工复核、确认评估结论",
+            "home": "judge",
+            "username": "expert",
+            "password": password,
+        },
+        {
+            "role": "viewer",
+            "label": "普通用户",
+            "description": "只读查询授权范围内的报告",
+            "home": "dashboard",
+            "username": "viewer",
+            "password": password,
+        },
+        {
+            "role": "admin",
+            "label": "系统管理员",
+            "description": "用户与项目授权、系统与审计",
+            "home": "users",
+            "username": "admin",
+            "password": password,
+        },
+    ]
+    return ok({"enabled": True, "identities": identities})
+
+
 @router.post("/logout", summary="登出（写审计）")
 def logout(request: Request, session: DbSession, user: CurrentUser) -> dict:
     add_audit_log(

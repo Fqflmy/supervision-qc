@@ -69,14 +69,29 @@ def run_page_checks(page: Any, shot: Callable, goto: Callable, wait_metrics: Cal
     goto("/login", ".login-form")
     record("登录页 · 渲染", page.locator(".login-hero__title").count() > 0, "标题与特性列表")
 
-    # 2) 登录流程
-    page.fill('input[placeholder="请输入用户名"]', "admin")
-    page.fill('input[placeholder="请输入密码"]', "Admin@12345")
+    # 1.1) 身份选择：登录页应显示角色卡片，点击后自动填入对应演示账号
+    identity_cards = page.locator(".identity__card").count()
+    record("登录页 · 身份选择", identity_cards >= 4, f"{identity_cards} 个身份卡片")
+
+    page.locator(".identity__card", has_text="监理工程师").first.click()
+    page.wait_for_timeout(300)
+    filled_user = page.input_value('input[placeholder="请输入用户名"]')
+    record("登录页 · 选择身份自动填账号", filled_user == "engineer", f"用户名={filled_user}")
+
+    # 2) 登录流程：改用「系统管理员」身份，后续用例需要管理权限
+    page.locator(".identity__card", has_text="系统管理员").first.click()
+    page.wait_for_timeout(300)
     page.click('button:has-text("登 录")')
     page.wait_for_selector(".app-shell", timeout=30000)
+    page.wait_for_timeout(1200)
     record("登录页 · 登录跳转", page.locator(".app-shell").count() > 0, page.url.split("#")[-1])
 
-    # 3) 运行总览
+    # 2.1) 按角色分流：管理员应落在「用户与授权」而非总览
+    landed = page.url.split("#")[-1]
+    record("登录页 · 管理员按角色分流", landed.startswith("/users"), f"落地={landed}")
+
+    # 3) 运行总览（显式导航，不再依赖登录后的默认落点）
+    goto("/dashboard", "text=运行总览")
     metrics = wait_metrics()
     record("总览页 · 指标卡片", len(metrics) >= 5 and metrics[0] not in ("0份", "0", ""), f"卡片值={metrics[:5]}")
     components = page.locator(".component-row").count()

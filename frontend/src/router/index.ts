@@ -1,6 +1,6 @@
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router'
 import { tokenStore } from '@/api/http'
-import { useAuthStore } from '@/stores/auth'
+import { homeForRole, useAuthStore } from '@/stores/auth'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -12,8 +12,15 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/',
     component: () => import('@/layouts/MainLayout.vue'),
-    redirect: '/dashboard',
     children: [
+      {
+        // 入口分流：按登录用户的角色跳到对应首页（见 views/RoleHomeView.vue）。
+        // 不能用 redirect: '/dashboard' —— 那会把所有角色送到同一个页面。
+        path: '',
+        name: 'home',
+        component: () => import('@/views/RoleHomeView.vue'),
+        meta: { title: '首页', hidden: true },
+      },
       {
         path: 'dashboard',
         name: 'dashboard',
@@ -76,7 +83,8 @@ const routes: RouteRecordRaw[] = [
       },
     ],
   },
-  { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
+  // 未匹配路径回到入口分流页（按角色决定去向），而不是硬编码 /dashboard
+  { path: '/:pathMatch(.*)*', redirect: { name: 'home' } },
 ]
 
 const router = createRouter({
@@ -91,7 +99,12 @@ router.beforeEach(async (to) => {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
   if (isPublic && tokenStore.access && to.name === 'login') {
-    return { name: 'dashboard' }
+    // 已登录却访问登录页：按角色回各自首页，而不是一律去总览
+    const auth = useAuthStore()
+    if (!auth.user) {
+      await auth.fetchProfile()
+    }
+    return { name: homeForRole(auth.user?.role) }
   }
 
   // 角色级访问控制：路由声明了 meta.roles 时校验当前用户角色。
@@ -106,7 +119,9 @@ router.beforeEach(async (to) => {
     }
     const role = auth.user?.role
     if (!role || !required.includes(role)) {
-      return { name: 'dashboard' }
+      // 回「入口分流页」而非硬编码 dashboard —— 后者对无权角色同样不可达，
+      // 会造成连续重定向；home 再按真实角色选择落地页。
+      return { name: 'home' }
     }
   }
   return true

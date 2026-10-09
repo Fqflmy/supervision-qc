@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     工程监理质量智能评估系统 —— 一键启动脚本（全容器方案，Windows / PowerShell）
 
@@ -16,7 +16,10 @@
     .\start.ps1 -Down                    # 停止所有服务
 
 .NOTES
-    访问：Web http://localhost:8080   API http://localhost:8000/api/v1/docs
+    访问：Web http://localhost:8080（接口文档 http://localhost:8080/api/v1/docs）
+          监控 http://localhost:9090（Prometheus） / http://localhost:3000（Grafana）
+    全栈模式不映射 api 的 8000 端口：前后端分离后由 web 的 nginx 反向代理 /api，
+    最小化对外暴露面（PostgreSQL/Neo4j/Redis/MinIO 同样只在集群内网）。
     日志：logs\compose-up.log（启动过程）、docker compose logs -f api（运行日志）
     若提示「未对文件进行数字签名」，请双击 start.bat，或使用：
         powershell -ExecutionPolicy Bypass -File .\start.ps1
@@ -44,6 +47,11 @@ $InfraCompose = Join-Path $Deploy 'docker-compose-infra.yml'
 $LogDir = Join-Path $Root 'logs'
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+
+# 所有 docker compose 调用都用相对路径（根目录的 docker-compose.yml 通过 include
+# 复用 deploy 下的定义），因此必须保证工作目录是仓库根 —— 否则从其它目录执行
+# 会报「no configuration file provided」，而这类错误信息不指向真正原因。
+Set-Location -LiteralPath $Root
 
 function Write-Step([string]$Text) { Write-Host "`n=== $Text ===" -ForegroundColor Cyan }
 function Write-Ok([string]$Text) { Write-Host "  [OK] $Text" -ForegroundColor Green }
@@ -215,12 +223,16 @@ if (-not $NoWait) {
     $deadline = (Get-Date).AddMinutes(6)
     $apiReady = $false
     $webReady = $false
+    # 注意：全栈模式**不映射 api 的 8000 端口**，只有 web 的 8080 对外。
+    # 后端健康检查必须经 nginx 反向代理（location /api/ -> http://api:8000），
+    # 否则会一直连不上、等满超时后误报「后端未就绪」，而服务其实是好的。
+    $healthUrl = 'http://127.0.0.1:8080/api/v1/health'
     while ((Get-Date) -lt $deadline) {
         if (-not $apiReady) {
             try {
-                $null = Invoke-WebRequest -Uri 'http://127.0.0.1:8000/api/v1/health' -TimeoutSec 4 -UseBasicParsing
+                $null = Invoke-WebRequest -Uri $healthUrl -TimeoutSec 4 -UseBasicParsing
                 $apiReady = $true
-                Write-Ok '后端 API 就绪 :8000'
+                Write-Ok '后端 API 就绪（经 web 代理 /api）'
             } catch { }
         }
         if (-not $webReady) {
@@ -233,7 +245,7 @@ if (-not $NoWait) {
         if ($apiReady -and $webReady) { break }
         Start-Sleep -Seconds 5
     }
-    if (-not $apiReady) { Write-Warn2 '后端 6 分钟内未就绪，请执行 docker compose logs api 排查' }
+    if (-not $apiReady) { Write-Warn2 "后端 6 分钟内未就绪，请执行 docker compose logs api 排查（探针：$healthUrl）" }
     if (-not $webReady) { Write-Warn2 '前端 6 分钟内未就绪，首次构建较慢可稍后刷新页面' }
 }
 
@@ -257,9 +269,14 @@ if ($ready) {
 # --------------------------------------------------------------------------- #
 Write-Step '启动完成'
 Write-Host '  管理后台     http://localhost:8080' -ForegroundColor White
-Write-Host '  接口文档     http://localhost:8000/api/v1/docs' -ForegroundColor White
-Write-Host '  Neo4j 浏览器  http://localhost:7476' -ForegroundColor White
+Write-Host '  接口文档     http://localhost:8080/api/v1/docs' -ForegroundColor White
+Write-Host '  监控指标     http://localhost:9090' -ForegroundColor White
+Write-Host '  监控面板     http://localhost:3000  （admin / 见 deploy\.env 的 GRAFANA_PASSWORD）' -ForegroundColor White
 Write-Host '  登录账号     admin / Admin@12345' -ForegroundColor White
+Write-Host ''
+Write-Host '  说明：全栈模式只对外暴露 web 8080 / Prometheus 9090 / Grafana 3000；' -ForegroundColor DarkGray
+Write-Host '        api、PostgreSQL、Neo4j、Redis、MinIO 仅在集群内网可达（最小暴露面）。' -ForegroundColor DarkGray
+Write-Host '        需要直连数据库/Neo4j 做本机开发时，改用：.\start.ps1 -Mode infra' -ForegroundColor DarkGray
 Write-Host "`n  查看状态   docker compose ps" -ForegroundColor Gray
 Write-Host '  查看日志   docker compose logs -f api' -ForegroundColor Gray
 Write-Host '  停止服务   .\start.ps1 -Down' -ForegroundColor Gray
