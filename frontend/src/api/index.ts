@@ -425,6 +425,8 @@ export interface MetricsInfo {
   tasks_by_state: Record<string, number>
   tokens_total: number
   vector_index: Record<string, unknown>
+  /** global = 管理员看到的全局口径；visible = 仅统计当前用户可见范围 */
+  scope?: 'global' | 'visible'
 }
 
 export interface AuditLog {

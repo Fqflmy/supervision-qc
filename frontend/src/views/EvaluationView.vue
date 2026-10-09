@@ -8,8 +8,25 @@
         <el-checkbox v-model="filters.mine" @change="load">仅看我发起的</el-checkbox>
         <el-button @click="load">刷新</el-button>
         <div class="toolbar__spacer"></div>
-        <el-button type="primary" :icon="Plus" @click="createVisible = true">新建评估任务</el-button>
+        <!-- 只有具备 eval:write 的角色能发起评估；审核人员/只读用户进来是为了查看与复核 -->
+        <el-tooltip v-if="!auth.canStartEval" content="当前角色无发起评估权限（需监理工程师）" placement="bottom">
+          <span>
+            <el-button type="primary" :icon="Plus" disabled>新建评估任务</el-button>
+          </span>
+        </el-tooltip>
+        <el-button v-else type="primary" :icon="Plus" @click="createVisible = true">新建评估任务</el-button>
       </div>
+
+      <!-- 角色职责提示：让不同身份一进来就知道该干什么 -->
+      <el-alert
+        v-if="!auth.canStartEval"
+        type="info"
+        show-icon
+        :closable="false"
+        style="margin-bottom: 12px"
+        :title="roleHintTitle"
+        :description="roleHintDesc"
+      />
 
       <el-table v-loading="loading" :data="tasks" size="default" empty-text="暂无评估任务">
         <el-table-column prop="title" label="任务名称" min-width="220" show-overflow-tooltip />
@@ -148,13 +165,15 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { evalApi, kbApi, type EvalTask, type KnowledgeBase } from '@/api'
 import { STATE_LABELS, fmtTime, stateLabel, stateTone } from '@/utils/format'
+import { useAuthStore } from '@/stores/auth'
 
+const auth = useAuthStore()
 const router = useRouter()
 
 const specialties = ['结构工程', '地基基础', '装饰装修', '屋面工程', '给排水', '电气工程', '施工安全']
@@ -166,6 +185,25 @@ const pageSize = ref(20)
 const total = ref(0)
 const runningId = ref<string | null>(null)
 const filters = reactive({ state: '', mine: false })
+
+/**
+ * 角色职责提示。
+ *
+ * 评估任务页对不同角色的意义完全不同：工程师在这里**发起**评估，
+ * 审核人员在这里**找待复核的任务**。若只把按钮禁用而不说明，
+ * 审核人员会以为「功能坏了」。因此按角色给出明确的下一步动作。
+ */
+const roleHintTitle = computed(() => {
+  if (auth.canReview) return '你当前是审核角色：请到「质量评审」处理待复核结论'
+  return '当前角色为只读：可查看授权范围内的评估结果'
+})
+
+const roleHintDesc = computed(() => {
+  if (auth.canReview) {
+    return '评估任务由监理工程师发起；审核人员在「质量评审」中查看评分、确认结论或提交人工复核意见。'
+  }
+  return '如需发起评估，请联系管理员为你的账号分配「监理工程师」角色。'
+})
 
 const kbs = ref<KnowledgeBase[]>([])
 const createVisible = ref(false)

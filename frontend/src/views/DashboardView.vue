@@ -61,14 +61,18 @@
         <section class="panel">
           <div class="panel__head">
             <div class="panel__title">检索链路配置</div>
+            <div v-if="cfgDenied" class="panel__hint">仅管理员可见</div>
           </div>
-          <el-descriptions :column="1" size="small" border>
+          <el-descriptions v-if="!cfgDenied" :column="1" size="small" border>
             <el-descriptions-item label="分块 / 重叠">{{ cfg.chunk_size }} / {{ cfg.chunk_overlap }} token</el-descriptions-item>
             <el-descriptions-item label="双通道召回">BM25 Top{{ cfg.bm25_top_k }} + 向量 Top{{ cfg.dense_top_k }}</el-descriptions-item>
             <el-descriptions-item label="RRF / 权重">k={{ cfg.rrf_k }}，{{ cfg.bm25_weight }} / {{ cfg.dense_weight }}</el-descriptions-item>
             <el-descriptions-item label="重排保留">{{ cfg.rerank_top_n }} 条</el-descriptions-item>
             <el-descriptions-item label="无依据阈值">{{ cfg.no_evidence_threshold }}</el-descriptions-item>
           </el-descriptions>
+          <div v-else class="panel__hint" style="padding: 8px 0">
+            运行配置（含检索参数）仅管理员可查看。当前账号可在「知识库管理」与「评估任务」中正常使用这些链路。
+          </div>
         </section>
       </div>
     </div>
@@ -88,17 +92,21 @@ const metrics = ref<MetricsInfo | null>(null)
 const health = ref<HealthInfo | null>(null)
 const tasks = ref<EvalTask[]>([])
 const cfg = ref<Record<string, number>>({})
+/** 运行配置仅管理员可读；非管理员时面板显示说明而不是空白 */
+const cfgDenied = ref(false)
 
 const cards = computed(() => {
   const m = metrics.value
   const completed = m?.tasks_by_state?.COMPLETED ?? 0
   const needHuman = (m?.tasks_by_state?.NEED_HUMAN ?? 0) + (m?.tasks_by_state?.DEGRADED ?? 0)
+  // 非管理员的指标是「按可见范围」统计的，脚注里说明，避免与管理员看到的数字对不上时误判
+  const scopeFoot = m?.scope === 'visible' ? '（仅你可见范围）' : ''
   return [
-    { label: '规范文档', value: m?.documents_total ?? 0, unit: '份', foot: '已入库并建立索引' },
-    { label: '文本分块', value: m?.chunks_total ?? 0, unit: '块', foot: '条款级切分结果' },
+    { label: '规范文档', value: m?.documents_total ?? 0, unit: '份', foot: `已入库并建立索引${scopeFoot}` },
+    { label: '文本分块', value: m?.chunks_total ?? 0, unit: '块', foot: `条款级切分结果${scopeFoot}` },
     { label: '已完成评估', value: completed, unit: '个', foot: 'Agent 五阶段执行完毕' },
     { label: '待人工复核', value: needHuman, unit: '个', foot: '低分或降级任务' },
-    { label: '累计 Token', value: (m?.tokens_total ?? 0).toLocaleString(), unit: '', foot: '全部任务模型消耗' },
+    { label: '累计 Token', value: (m?.tokens_total ?? 0).toLocaleString(), unit: '', foot: `模型消耗${scopeFoot}` },
   ]
 })
 
@@ -137,21 +145,47 @@ function openTask(id: string) {
 }
 
 onMounted(async () => {
-  try {
-    const [m, h, list, config] = await Promise.all([
-      systemApi.metrics(),
-      systemApi.health(),
-      evalApi.list({ page: 1, page_size: 6 }),
-      systemApi.config(),
-    ])
-    metrics.value = m
-    health.value = h
-    tasks.value = list.items
-    cfg.value = (config.retrieval ?? {}) as Record<string, number>
-  } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '加载失败')
+  // 逐个请求独立结算，不能用 Promise.all：
+  // `/admin/config` 需要 admin 权限，监理工程师等角色会拿到 403；
+  // 若用 Promise.all，一处失败会导致 metrics/health/tasks **全部丢弃** ——
+  // 页面表现成「所有指标归零、组件全部降级、还弹一个红色权限错误」，
+  // 很容易被误判成「服务坏了」或「数据丢了」。
+  const [metricsRes, healthRes, tasksRes, configRes] = await Promise.allSettled([
+    systemApi.metrics(),
+    systemApi.health(),
+    evalApi.list({ page: 1, page_size: 6 }),
+    systemApi.config(),
+  ])
+
+  if (metricsRes.status === 'fulfilled') {
+    metrics.value = metricsRes.value
+  } else {
+    ElMessage.warning(`运行指标加载失败：${describe(metricsRes.reason)}`)
+  }
+
+  if (healthRes.status === 'fulfilled') {
+    health.value = healthRes.value
+  } else {
+    ElMessage.warning(`组件状态加载失败：${describe(healthRes.reason)}`)
+  }
+
+  if (tasksRes.status === 'fulfilled') {
+    tasks.value = tasksRes.value.items
+  }
+
+  if (configRes.status === 'fulfilled') {
+    cfg.value = (configRes.value.retrieval ?? {}) as Record<string, number>
+    cfgDenied.value = false
+  } else {
+    // 运行配置仅管理员可读；非管理员不提示错误，改为在面板内说明
+    cfgDenied.value = true
   }
 })
+
+/** 把异常压成一行可读信息 */
+function describe(reason: unknown): string {
+  return reason instanceof Error ? reason.message : String(reason)
+}
 </script>
 
 <style scoped>

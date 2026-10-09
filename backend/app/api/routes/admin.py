@@ -77,15 +77,55 @@ def health() -> dict:
     )
 
 
-@router.get("/metrics", summary="Prometheus 指标")
+@router.get("/metrics", summary="运行指标（按可见范围统计）")
 def metrics(session: DbSession, user: CurrentUser) -> dict:
-    """以 JSON 形式暴露关键指标；生产建议接入 prometheus_client。"""
-    doc_count = int(session.execute(select(func.count(SpecDoc.id))).scalar() or 0)
-    chunk_count = int(session.execute(select(func.count(DocChunk.id))).scalar() or 0)
-    task_rows = session.execute(
-        select(EvalTask.current_state, func.count(EvalTask.id)).group_by(EvalTask.current_state)
-    ).all()
-    token_sum = session.execute(select(func.coalesce(func.sum(EvalTask.total_tokens), 0))).scalar()
+    """关键运行指标。
+
+    **按调用者的可见范围统计**，与任务列表、知识库列表的口径一致：
+    管理员看到全局，非管理员只看到「本人发起 或 所属项目内」的数据。
+
+    为什么必须这么做：原先是全局统计，于是出现「卡片显示 80 个任务，
+    列表里一条都没有」的矛盾 —— 用户会认为系统坏了或数据丢了。
+    口径不一致本身就是缺陷，不只是观感问题。
+
+    ⚠️ 注意与根路径 ``/metrics``（Prometheus 文本端点）的区别：
+    那个端点用于监控抓取，必须是**全局口径**（且按令牌鉴权），
+    因此本文件与 ``app/api/routes/metrics.py`` 的统计口径刻意不同。
+    """
+    from app.core.authz import is_admin, visible_kb_filter, visible_task_filter
+
+    admin = is_admin(user)
+
+    # ---- 文档与分块：按可见知识库过滤 ----
+    kb_scope = visible_kb_filter(user)
+    doc_stmt = select(func.count(SpecDoc.id))
+    # DocChunk 自带 doc_id（非仅 doc_version_id），因此可直接 join SpecDoc，
+    # 无需绕 DocVersion —— 少一次 join 也少一处出错点。
+    chunk_stmt = select(func.count(DocChunk.id)).join(SpecDoc, DocChunk.doc_id == SpecDoc.id)
+    if kb_scope is not None:
+        from app.db.models import KnowledgeBase
+
+        doc_stmt = doc_stmt.join(
+            KnowledgeBase, SpecDoc.kb_id == KnowledgeBase.id
+        ).where(kb_scope)
+        chunk_stmt = chunk_stmt.join(
+            KnowledgeBase, SpecDoc.kb_id == KnowledgeBase.id
+        ).where(kb_scope)
+    doc_count = int(session.execute(doc_stmt).scalar() or 0)
+    chunk_count = int(session.execute(chunk_stmt).scalar() or 0)
+
+    # ---- 任务与 Token：按可见范围过滤 ----
+    task_scope = visible_task_filter(user)
+    state_stmt = select(EvalTask.current_state, func.count(EvalTask.id)).group_by(
+        EvalTask.current_state
+    )
+    token_stmt = select(func.coalesce(func.sum(EvalTask.total_tokens), 0))
+    if task_scope is not None:
+        state_stmt = state_stmt.where(task_scope)
+        token_stmt = token_stmt.where(task_scope)
+    task_rows = session.execute(state_stmt).all()
+    token_sum = session.execute(token_stmt).scalar()
+
     return ok(
         {
             "documents_total": doc_count,
@@ -94,6 +134,8 @@ def metrics(session: DbSession, user: CurrentUser) -> dict:
             "tokens_total": int(token_sum or 0),
             "vector_index": vector_index_summary(),
             "error_codes": ERROR_CODES,
+            # 前端据此提示「仅统计你可见范围」，避免与管理员看到的数字对不上时误判
+            "scope": "global" if admin else "visible",
         }
     )
 

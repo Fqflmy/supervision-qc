@@ -2,19 +2,20 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { authApi, type User } from '@/api'
 import { tokenStore } from '@/api/http'
+import { roleCan, roleIsAdmin, roleLabel as labelOfRole, type Permission } from '@/utils/permissions'
 
 /**
  * 各角色的默认落地页。
  *
- * 与后端 ROLE_PERMISSIONS 对应：
- * - ``admin``      全权限，且需要管用户与项目授权 -> 用户与授权页
- * - ``kb_manager`` 有 ``kb:write`` 但无 ``eval:write`` -> 知识库管理
- * - ``engineer``   有 ``eval:write`` -> 评估任务（其主要工作）
- * - ``expert``     有 ``eval:review`` -> 质量评审（待复核队列）
+ * 与该角色的**主要职责**对应（不是「能访问什么」，而是「该先干什么」）：
+ * - ``admin``      管用户与项目授权 -> 用户与授权页
+ * - ``kb_manager`` 维护规范库 -> 知识库管理
+ * - ``engineer``   发起质量评估 -> 评估任务
+ * - ``expert``     人工复核 -> 质量评审（待复核队列）
  * - ``viewer``     只读 -> 运行总览
  *
  * 这是**体验层**的落地页选择，不代表权限：真正的边界在后端，
- * 前端路由与菜单都会按角色过滤。
+ * 前端路由与菜单都会按权限点过滤。
  */
 export const ROLE_HOME: Record<string, string> = {
   admin: 'users',
@@ -35,9 +36,19 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isAuthenticated = computed(() => Boolean(tokenStore.access))
   const role = computed(() => user.value?.role ?? '')
-  const isAdmin = computed(() => role.value === 'admin')
-  const canWriteKb = computed(() => ['admin', 'kb_manager'].includes(role.value))
-  const canReview = computed(() => ['admin', 'expert'].includes(role.value))
+  const isAdmin = computed(() => roleIsAdmin(role.value))
+  const roleLabel = computed(() => labelOfRole(role.value))
+
+  /** 权限判定：菜单显示与按钮可用性都走它，规则来自 utils/permissions */
+  function can(permission: Permission): boolean {
+    return roleCan(role.value, permission)
+  }
+
+  // 常用能力的语义化别名（避免各页面重复写权限点字符串）
+  const canWriteKb = computed(() => can('kb:write'))
+  const canReview = computed(() => can('eval:review'))
+  const canStartEval = computed(() => can('eval:write'))
+  const canManageSystem = computed(() => can('admin:*'))
   /** 当前用户的默认落地页 */
   const home = computed(() => homeForRole(role.value))
 
@@ -84,9 +95,13 @@ export const useAuthStore = defineStore('auth', () => {
     error,
     isAuthenticated,
     role,
+    roleLabel,
     isAdmin,
+    can,
     canWriteKb,
     canReview,
+    canStartEval,
+    canManageSystem,
     home,
     login,
     fetchProfile,

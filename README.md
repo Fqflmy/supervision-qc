@@ -277,6 +277,10 @@ npm run dev
 | `& $py -m pytest tests\test_agent_tools.py` | **工具调用权限**（工具级授权/参数校验/调用审计） | 通过（21 项） |
 | `& $py -m pytest tests\test_user_management_api.py` | **用户与项目授权管理** | 通过（9 项） |
 | `& $py -m pytest tests\test_demo_login.py` | **登录身份选择**（生产关闭/角色对应/不可提权） | 通过（6 项） |
+| `& $py -m pytest tests\test_role_matrix.py` | **角色权限矩阵**（前后端权限一致 / 各角色菜单契约 / 指标口径） | 通过（6 项） |
+| `& $py -m pytest tests\test_schema_bootstrap.py` | **结构初始化与启动顺序**（入口顺序/镜像内容/存量库纳管） | 通过（8 项） |
+| `& $py scripts\check_schema.py` | **结构自查**（判定全新库 / 存量库未纳管 / 已纳管） | 通过 |
+| `& $py scripts\shot_roles.py` | **逐角色界面截图**（核验菜单集合与落地页） | 通过（4 角色） |
 | `& $py -m pytest tests\test_metrics_endpoint.py` | **指标端点与抓取鉴权**（Prometheus 文本格式） | 通过（20 项） |
 | `& $py -m pytest tests\test_tracing.py` | **链路追踪**（优雅关闭/空操作/形状压缩/接入点） | 通过（15 项） |
 | `& $py scripts\verify_langsmith.py` | **LangSmith 接入验证**（Key 有效性 + 数据可查回） | 通过 |
