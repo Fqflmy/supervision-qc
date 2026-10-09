@@ -20,12 +20,11 @@ from app.core.authz import (
     visible_task_filter,
 )
 from app.constants import (
-    JUDGE_GRADE_LABELS,
     AuditAction,
     EvalState,
-    JudgeGrade,
     REVIEWABLE_STATES,
     ReviewStatus,
+    overall_verdict_label,
     review_status_of,
 )
 from app.core.errors import ConflictError, ForbiddenError, NotFoundError
@@ -72,6 +71,9 @@ def _task_out(task: EvalTask) -> dict:
         "started_at": task.started_at,
         "finished_at": task.finished_at,
         "created_at": task.created_at,
+        # 乐观锁版本号：待复核队列里直接裁定需要回传它，
+        # 列表缺这个字段会导致「列表内裁定」拿不到 expected_version（无法防并发）。
+        "version": int(task.version),
     }
 
 
@@ -160,6 +162,7 @@ async def run_task(
     # 也能触发执行** —— 读权限不等于写权限。
     user: Annotated[User, require_permission("eval:write")],
     resume: bool = Query(False, description="是否从最近检查点续跑"),
+    force: bool = Query(False, description="已签发的报告需显式 force=true 才能重跑"),
 ) -> dict:
     task = session.get(EvalTask, task_id)
     if task is None:
@@ -168,6 +171,16 @@ async def run_task(
     assert_task_access(user, task)
     if task.current_state in {EvalState.COMPLETED.value, EvalState.CANCELLED.value} and not resume:
         raise ConflictError(f"任务已处于终态 {task.current_state}，如需重跑请使用 resume=true")
+
+    # 已签发的报告是**人工复核的成果**，重跑会重新生成报告并清除签认。
+    # 必须显式确认，避免误点「重新执行」就悄悄作废一次人工复核。
+    # （此前没有这道防护，实测出现过「签发后重跑 → 新报告凭空继承旧签认」
+    #   的矛盾数据，已同时在 runner._upsert_report 修复。）
+    if not force and task.report is not None and task.report.is_final:
+        raise ConflictError(
+            "该报告已由人工复核签发生效，重跑将作废本次签认并需重新复核。"
+            "确认重跑请使用 force=true。"
+        )
 
     # 说明：本请求会在持有会话的情况下执行耗时数十秒到数分钟的 Agent（多次 LLM 调用），
     # 期间连接可能被服务端回收（空闲超时/连接池回收/网络抖动）。落库阶段已内置
@@ -539,13 +552,12 @@ def get_review(
             "current_state": task.current_state,
             "version": int(task.version),
             "machine_verdict": report.overall_verdict if report else None,
-            # overall_verdict 存的是 JudgeGrade（优秀/良好/合格/不合格），
-            # 不是条款判定 Verdict（符合/不符合）—— 别套错枚举，否则取值会抛 ValueError
-            "machine_verdict_label": JUDGE_GRADE_LABELS.get(
-                JudgeGrade(report.overall_verdict), report.overall_verdict
-            )
-            if report and report.overall_verdict
-            else None,
+            # overall_verdict 可能是「等级」（qualified/excellent）也可能是
+            # 「条款判定」（non_compliant/partial），取决于报告怎么生成的 ——
+            # 用 overall_verdict_label 兼容两套词汇，不要硬套某一个枚举。
+            "machine_verdict_label": overall_verdict_label(
+                report.overall_verdict if report else None
+            ),
             "risk_level": report.risk_level if report else None,
             **payload,
         }

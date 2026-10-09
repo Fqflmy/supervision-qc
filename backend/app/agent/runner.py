@@ -373,6 +373,20 @@ def _persist_report(
     else:
         for key, value in payload.items():
             setattr(existing, key, value)
+        # 重新生成报告时**必须清除上一次的人工裁定**。
+        #
+        # 否则会留下这样的矛盾数据：任务是 NEED_HUMAN（待复核），
+        # 报告却带着上一版的 human_verdict=qualified 和 is_final=True ——
+        # 等于新报告被凭空继承了旧签认，而它**从未被人看过**。
+        # 这比「少一个字段」严重：签发记录的语义被污染了。
+        #
+        # 重跑产生的是**新报告**，理应重新走复核；历次裁定在 human_feedback
+        # 与 audit_log 中已留痕，不会因为清空当前字段而丢失追溯链。
+        existing.human_verdict = None
+        existing.review_comment = None
+        existing.reviewed_by = None
+        existing.reviewed_at = None
+        existing.is_final = False
     return existing
 
 

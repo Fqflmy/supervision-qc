@@ -382,8 +382,8 @@ export const evalApi = {
   list: (params: { page?: number; page_size?: number; state?: string; mine?: boolean }) =>
     api.get<PageData<EvalTask>>('/eval/tasks', params),
   detail: (id: string) => api.get<EvalTaskDetail>(`/eval/tasks/${id}`),
-  run: (id: string, resume = false) =>
-    api.post<EvalRunResult>(`/eval/tasks/${id}/run`, undefined, { resume }),
+  run: (id: string, resume = false, force = false) =>
+    api.post<EvalRunResult>(`/eval/tasks/${id}/run`, undefined, { resume, force }),
   submit: (id: string) => api.post<{ task_id: string; current_state: string }>(`/eval/tasks/${id}/submit`),
   report: (id: string) => api.get<EvalReport>(`/eval/tasks/${id}/report`),
   resume: (id: string, payload: { action: string; corrected_matches?: Record<string, unknown>[]; comment?: string }) =>

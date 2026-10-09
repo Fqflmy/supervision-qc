@@ -304,3 +304,28 @@ ERROR_CODES = {
     "AGENT_GUARD_TRIGGERED": 60005,
     "NO_EVIDENCE": 60006,
 }
+
+
+#: `EvalReport.overall_verdict` 采用**两套词汇之一**，取决于报告怎么生成的：
+#:
+#: - 有 Judge 总分时 → 取 **等级**（`JudgeGrade`：优秀/良好/合格/不合格）；
+#: - 仅按条款判定汇总时 → 取 **条款判定**（`Verdict`：符合/不符合/部分符合…）。
+#:
+#: 因此解析标签**必须两套都试**。只认其中一套会在另一种报告上抛 `ValueError`
+#: 导致接口 500 —— 这个坑出现过两次：先用 `Verdict` 解析等级值，
+#: 改成 `JudgeGrade` 后又解析不了条款值。放在文件末尾是因为它依赖
+#: 上面所有枚举的定义。
+def overall_verdict_label(value: str | None) -> str | None:
+    """把 `overall_verdict` 转成中文标签，兼容等级与条款判定两套词汇。"""
+    if not value:
+        return None
+    for enum_cls, labels in (
+        (JudgeGrade, JUDGE_GRADE_LABELS),
+        (Verdict, VERDICT_LABELS),
+    ):
+        try:
+            return labels[enum_cls(value)]
+        except (ValueError, KeyError):
+            continue
+    # 未知取值原样返回，不抛异常 —— 展示层不该因为多了一个枚举值就 500
+    return value

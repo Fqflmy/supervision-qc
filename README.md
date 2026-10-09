@@ -282,6 +282,7 @@ npm run dev
 | `& $py -m pytest tests\test_authz_write_actions.py` | **写操作鉴权**（只读不得触发执行/提交复核；单项目自动归属） | 通过（7 项） |
 | `& $py -m pytest tests\test_human_review.py` | **人工复核裁定与签发**（合格/不合格、不覆盖机器结论、乐观锁、留痕） | 通过（15 项） |
 | `& $py scripts\verify_review_e2e.py http://127.0.0.1:8000` | **复核裁定端到端**（含签发、驳回重跑、权限、分歧样本） | 通过（31 项） |
+| `& $py scripts\verify_graph_labels.py` | **图谱标签隔离与一致性**（实体不占用保留标签；Spec 数=库中规范数） | 通过（7 项） |
 | `& $py scripts\check_schema.py` | **结构自查**（判定全新库 / 存量库未纳管 / 已纳管） | 通过 |
 | `& $py scripts\shot_roles.py` | **逐角色界面截图**（核验菜单集合与落地页） | 通过（4 角色） |
 | `& $py -m pytest tests\test_metrics_endpoint.py` | **指标端点与抓取鉴权**（Prometheus 文本格式） | 通过（20 项） |

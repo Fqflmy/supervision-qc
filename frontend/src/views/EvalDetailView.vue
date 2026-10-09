@@ -622,9 +622,26 @@ async function run(fromResume: boolean) {
   // 注意：模板里必须写成 @click="run(false)"，否则 Vue 会把 PointerEvent 作为实参传入，
   // 导致 resume 变成真值、请求带上 resume=true 而报「任务已处于终态」。
   const resume = fromResume === true
+
+  // 已签发的报告是人工复核的成果，重跑会重新生成报告并清除签认 ——
+  // 必须让用户明确知道这一点，不能误点一下就悄悄作废一次复核。
+  let force = false
+  if (review.value?.is_final) {
+    try {
+      await ElMessageBox.confirm(
+        '该报告已由人工复核签发生效。重跑将重新生成报告并**清除本次签认**，需要重新复核。确认继续？',
+        '重跑将作废签认',
+        { type: 'warning', confirmButtonText: '确认重跑', cancelButtonText: '取消' },
+      )
+      force = true
+    } catch {
+      return
+    }
+  }
+
   running.value = true
   try {
-    const result = await evalApi.run(taskId, resume)
+    const result = await evalApi.run(taskId, resume, force)
     ElMessage.success(
       `执行完成：${stateLabel(result.current_state)}，迭代 ${result.iteration_count} 次，` +
         `条款比对 ${result.matches.length} 项，耗时 ${(result.elapsed_ms / 1000).toFixed(1)}s`,

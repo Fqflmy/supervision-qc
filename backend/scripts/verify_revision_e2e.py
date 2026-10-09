@@ -193,6 +193,11 @@ def main() -> int:
     print()
     print("=" * 62)
     print(f"通过 {len(passed)} 项，失败 {len(failed)} 项")
+
+    # 清理本次验收产生的任务：验收数据不应留在业务库里
+    # （此前会留下 PENDING 任务，重新盘点数据时容易被误认为真实业务数据）
+    cleanup_acceptance_tasks()
+
     if failed:
         print()
         print("失败明细：")
@@ -201,6 +206,65 @@ def main() -> int:
         return 1
     print("[OK] 全部验收通过")
     return 0
+
+
+#: 本脚本创建的任务标题前缀
+ACCEPTANCE_TITLE_PREFIX = "端到端验收"
+
+
+def cleanup_acceptance_tasks() -> None:
+    """清理本脚本创建的验收任务及其关联数据。"""
+    try:
+        from sqlalchemy import delete, select
+
+        from app.db.models import (
+            AgentStepLog,
+            AgentToolCall,
+            EvalReport,
+            EvalSubtask,
+            EvalTask,
+            HumanFeedback,
+            JudgeReview,
+            JudgeScore,
+            MatchResult,
+        )
+        from app.db.session import session_scope
+
+        with session_scope() as session:
+            rows = (
+                session.execute(
+                    select(EvalTask).where(EvalTask.title.like(f"{ACCEPTANCE_TITLE_PREFIX}%"))
+                )
+                .scalars()
+                .all()
+            )
+            ids = [t.id for t in rows]
+            if not ids:
+                return
+            reports = (
+                session.execute(
+                    select(EvalReport).where(EvalReport.task_id.in_(ids))
+                )
+                .scalars()
+                .all()
+            )
+            report_ids = [r.id for r in reports]
+            if report_ids:
+                session.execute(delete(JudgeScore).where(JudgeScore.report_id.in_(report_ids)))
+                session.execute(delete(JudgeReview).where(JudgeReview.report_id.in_(report_ids)))
+                session.execute(delete(EvalReport).where(EvalReport.id.in_(report_ids)))
+            for model in (
+                HumanFeedback,
+                EvalSubtask,
+                MatchResult,
+                AgentStepLog,
+                AgentToolCall,
+            ):
+                session.execute(delete(model).where(model.task_id.in_(ids)))
+            session.execute(delete(EvalTask).where(EvalTask.id.in_(ids)))
+        print(f"  已清理验收任务 {len(ids)} 个")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [警告] 验收数据清理失败（可手工运行 reset_data.py）：{exc}")
 
 
 if __name__ == "__main__":

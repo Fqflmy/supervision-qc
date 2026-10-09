@@ -705,6 +705,15 @@ def finalize_node(state: AgentState) -> dict:
         target = EvalState.DEGRADED
     elif any(m.get("verdict") == Verdict.INSUFFICIENT_EVIDENCE.value for m in matches):
         target = EvalState.NEED_HUMAN
+    elif _report_needs_human(state):
+        # 「不符合」或「高风险」的结论必须经人工确认后才能成为正式报告
+        # （FR-JDG-05「不直接出具正式报告」；与「人工复核裁定」的签发语义一致）。
+        #
+        # 此前只按「证据不足」触发转人工，于是出现过这样的漏洞：
+        # 报告结论为「不符合」、风险「高」，但因**未执行 LLM-as-Judge**
+        # （没有分数，低分闸门无从触发），任务直接到达 COMPLETED ——
+        # 一份未签发的「不符合」报告就这样等同正式出具了。
+        target = EvalState.NEED_HUMAN
     elif has_report:
         target = EvalState.COMPLETED
     else:
@@ -717,6 +726,26 @@ def finalize_node(state: AgentState) -> dict:
             "summary": guard.summary(),
         }
     }
+
+
+def _report_needs_human(state: dict) -> bool:
+    """报告是否必须转人工复核。
+
+    判据取「结论」与「风险」两个维度中任一项为负面：
+
+    - 结论为 ``non_compliant``（不符合）；
+    - 风险等级为 ``high``。
+
+    注意**不含** ``partial``（部分符合）：那是常见的中间结论，
+    若也强制复核会让绝大多数任务都转人工，反而失去拦截意义。
+    ``insufficient_evidence`` 已在上游单独处理。
+    """
+    report = state.get("report") or {}
+    if not isinstance(report, dict):
+        return False
+    verdict = str(report.get("overall_verdict") or "").lower()
+    risk = str(report.get("risk_level") or "").lower()
+    return verdict == "non_compliant" or risk == "high"
 
 
 # --------------------------------------------------------------------------- #

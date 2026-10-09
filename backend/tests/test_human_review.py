@@ -478,3 +478,44 @@ def test_pending_queue_requires_review_permission(client, requires_db):
 
     response = client.get("/api/v1/eval/reviews/pending", headers=headers)
     assert response.status_code == 403
+
+
+# --------------------------------------------------------------------------- #
+# 8) 收敛规则：负面结论必须转人工
+# --------------------------------------------------------------------------- #
+def test_non_compliant_report_requires_human():
+    """结论「不符合」必须转人工复核。
+
+    缺陷背景：收敛逻辑此前只按「证据不足」转人工，「不符合」不触发 ——
+    于是当**未执行 LLM-as-Judge**（没有分数、低分闸门无从触发）时，
+    一份「不符合 + 高风险」的报告直接到达 COMPLETED，等同正式出具。
+    """
+    from app.agent.graph import _report_needs_human
+
+    assert _report_needs_human({"report": {"overall_verdict": "non_compliant"}}) is True
+    assert _report_needs_human(
+        {"report": {"overall_verdict": "qualified", "risk_level": "high"}}
+    ) is True
+
+
+def test_ordinary_report_does_not_force_human():
+    """普通结论不强制转人工 —— 否则绝大多数任务都会转人工，失去拦截意义。"""
+    from app.agent.graph import _report_needs_human
+
+    # 「部分符合 + 中风险」是常见中间结论，不应强制复核
+    assert (
+        _report_needs_human({"report": {"overall_verdict": "partial", "risk_level": "medium"}})
+        is False
+    )
+    assert (
+        _report_needs_human({"report": {"overall_verdict": "qualified", "risk_level": "low"}})
+        is False
+    )
+
+
+def test_report_needs_human_handles_missing_data():
+    """数据缺失时不得抛异常（收敛节点在异常路径上也会被调用）。"""
+    from app.agent.graph import _report_needs_human
+
+    for state in ({}, {"report": None}, {"report": {}}, {"report": "not-a-dict"}):
+        assert _report_needs_human(state) is False, f"输入 {state!r} 未安全处理"

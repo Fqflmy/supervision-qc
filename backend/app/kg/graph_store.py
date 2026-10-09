@@ -24,6 +24,12 @@ logger = get_logger(__name__)
 
 ALLOWED_RELATIONS = {r.value for r in KgRelation}
 
+#: 有**专用节点类型**的标签：这些标签下的节点由专门方法写入，属性结构固定
+#: （如 ``Spec {spec_code, spec_name}``、``Clause {clause_id, clause_no}``）。
+#: 实体（LLM 抽取的术语）**不得**占用它们，否则同一标签下会混入两种属性结构，
+#: 导致 ``stats()`` 等按标签计数的查询虚高。
+RESERVED_NODE_LABELS = {"Spec", "Clause", "Chapter"}
+
 CONSTRAINTS = (
     "CREATE CONSTRAINT clause_id IF NOT EXISTS FOR (c:Clause) REQUIRE c.clause_id IS UNIQUE",
     "CREATE CONSTRAINT spec_code IF NOT EXISTS FOR (s:Spec) REQUIRE s.spec_code IS UNIQUE",
@@ -210,14 +216,27 @@ class GraphStore:
         )
 
     def upsert_entity(self, text: str, label: str, **extra: Any) -> None:
+        """写入实体节点。
+
+        ⚠️ ``label`` 来自 LLM 抽取结果，**不能直接当 Neo4j 标签用**：
+        ``Spec`` / ``Clause`` / ``Chapter`` 等标签有**专用节点类型**
+        （``upsert_spec`` 写的是 ``(:Spec {spec_code, spec_name})``）。
+        若实体也打上同样的标签，两种属性结构不同的节点就会挤在同一标签下 ——
+        表现为 ``stats()`` 计数虚高：实测库里 4 部规范却报 **12 个 Spec 节点**
+        （4 个真规范 + 8 个被 LLM 标成 Spec 的实体）。
+        因此保留标签一律降级为 ``Entity``；实体自身的语义仍保留在 ``label``
+        属性中，检索与展示不受影响。
+        """
         if not self.available or not text:
             return
-        label = label if label.isalnum() else "Entity"
+        safe = label if (label or "").isalnum() else "Entity"
+        if safe in RESERVED_NODE_LABELS:
+            safe = "Entity"
         self._run(
             f"""
             MERGE (e:Entity {{text: $text}})
             SET e.label = $label, e.updated_at = timestamp()
-            SET e:{label}
+            SET e:{safe}
             """,
             text=text,
             label=label,
@@ -498,4 +517,11 @@ def set_graph_store(store: Optional[GraphStore]) -> None:
     _store = store
 
 
-__all__ = ["GraphStore", "get_graph_store", "set_graph_store", "ALLOWED_RELATIONS", "CONSTRAINTS"]
+__all__ = [
+    "GraphStore",
+    "get_graph_store",
+    "set_graph_store",
+    "ALLOWED_RELATIONS",
+    "CONSTRAINTS",
+    "RESERVED_NODE_LABELS",
+]
