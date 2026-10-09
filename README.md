@@ -133,6 +133,8 @@ docker compose up -d                 # 一条命令启动全部服务（含自�
 
 打开 <http://localhost:8080>，登录 `admin / Admin@12345`。
 
+> 种子数据还会创建 `engineer` / `expert` / `viewer` 三个示例角色账号（密码同上，均已绑定示例项目），便于验证角色权限与项目隔离。
+
 > 无需本地 GPU 或模型权重：检索默认使用硅基流动托管的 BGE-M3 与 BGE-Reranker。
 > 没有 API Key 也能跑通全链路：`.\start.ps1 -Offline`（走确定性假模型，用于验证功能）。
 > 更简明的日常操作见 [日常使用](docs/日常使用.md)。
@@ -274,6 +276,7 @@ npm run dev
 | `& $py -m pytest tests\test_isolation_api.py` | **越权回归**（A 项目用户无法读 B 项目任务/报告/规范库） | 通过（12 项） |
 | `& $py -m pytest tests\test_agent_tools.py` | **工具调用权限**（工具级授权/参数校验/调用审计） | 通过（20 项） |
 | `& $py -m pytest tests\test_user_management_api.py` | **用户与项目授权管理** | 通过（9 项） |
+| `& $py scripts\verify_isolation_live.py` | **真实账号隔离验证**（对比 admin/engineer/viewer 可见范围） | 通过 |
 | `& $py scripts\verify_deploy.py` | **容器化部署功能验收**（健康/鉴权/检索/问答/Agent/报告/Judge/看板/图谱/指标） | **通过 33/33** |
 | `& $py scripts\browser_e2e.py --base http://127.0.0.1:8080` | **浏览器端到端**（Edge 驱动 11 个页面 + 截图） | **通过 23/23**，控制台零错误 |
 | `& $py scripts\rebuild_index.py` | 换 Embedding 模型后重建全量索引 | 通过（94 分块 / 15.8 s） |

@@ -207,6 +207,42 @@ async def seed(reset: bool = False) -> int:
             session.flush()
             print("[OK] 创建示例项目 DEMO-001")
 
+        # 示例非管理员用户：用于直观验证角色权限与项目隔离。
+        # 没有它，演示环境只有一个管理员，无法体现「不同角色看到的范围不同」。
+        # 访问控制依赖 project_ids，这里把它绑定到示例项目。
+        if settings.seed_default_admin:
+            from app.core.security import hash_password
+
+            demo_users = [
+                ("engineer", "监理工程师", ["结构工程"], project.id),
+                ("expert", "审核专家", ["结构工程"], project.id),
+                ("viewer", "只读用户", ["结构工程"], project.id),
+            ]
+            created_any = False
+            for role, full_name, specialties, pid in demo_users:
+                exists = session.execute(
+                    select(User).where(User.username == role)
+                ).scalars().first()
+                if exists is not None:
+                    continue
+                session.add(
+                    User(
+                        username=role,
+                        full_name=full_name,
+                        password_hash=hash_password(settings.seed_default_admin_password),
+                        role=role,
+                        project_ids=[pid],
+                        specialties=specialties,
+                    )
+                )
+                created_any = True
+            if created_any:
+                session.flush()
+                print(
+                    "[OK] 创建示例角色账号 engineer / expert / viewer"
+                    "（密码同管理员，均已绑定示例项目 DEMO-001）"
+                )
+
         kb = session.execute(select(KnowledgeBase).where(KnowledgeBase.code == "KB-NATIONAL")).scalars().first()
         if kb is None:
             kb = KnowledgeBase(
