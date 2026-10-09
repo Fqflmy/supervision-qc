@@ -132,6 +132,11 @@ class KnowledgeBase(Base, TimestampMixin):
     description: Mapped[Optional[str]] = mapped_column(Text)
     retrieval_config: Mapped[Optional[dict]] = mapped_column(JSONType)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    #: 归属项目。为空表示「公共知识库」（所有用户可读）；有值则仅该项目成员可访问。
+    #: 访问控制见 app/core/authz.py。
+    project_id: Mapped[Optional[int]] = mapped_column(ForeignKey("project.id"))
+    #: 创建者。用于让上传者始终可见自己建的知识库。
+    owner_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sys_user.id"))
 
 
 class SpecDoc(Base, TimestampMixin):

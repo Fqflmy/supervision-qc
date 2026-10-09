@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """知识库与文档管理接口（FR-KB / FR-KG，SRS 6.2 API-02~09）。"""
 from __future__ import annotations
 
@@ -10,6 +10,13 @@ from sqlalchemy import func, or_, select
 from app.api.deps import CurrentUser, DbSession, client_ip, require_permission
 from app.config import settings
 from app.constants import AuditAction, ChunkStatus, DocStatus
+from app.core.authz import (
+    assert_kb_access,
+    is_admin,
+    project_ids_of,
+    user_id_of,
+    visible_kb_filter,
+)
 from app.core.errors import ConflictError, ForbiddenError, NotFoundError, ParamInvalidError
 from app.core.logging_conf import get_logger
 from app.core.response import ok, paginate
@@ -37,12 +44,34 @@ router = APIRouter(tags=["知识库"])
 logger = get_logger(__name__)
 
 
+def _doc_or_403(session, user: User, doc_id: int) -> SpecDoc:
+    """取文档并校验其所属知识库的访问权限。
+
+    统一入口，避免每个文档接口各写一遍（漏掉一处就是越权）。
+    文档本身没有 project 字段，归属由其所属知识库决定。
+    """
+    doc = session.get(SpecDoc, doc_id)
+    if doc is None:
+        raise NotFoundError(f"文档不存在：{doc_id}")
+    if doc.kb_id is not None and not is_admin(user):
+        kb = session.get(KnowledgeBase, doc.kb_id)
+        if kb is not None:
+            assert_kb_access(user, kb)
+    return doc
+
+
 # --------------------------------------------------------------------------- #
 # 知识库（空间）
 # --------------------------------------------------------------------------- #
 @router.get("/kb", summary="知识库列表")
 def list_kbs(session: DbSession, user: CurrentUser) -> dict:
-    rows = session.execute(select(KnowledgeBase).order_by(KnowledgeBase.id)).scalars().all()
+    # 只返回当前用户可访问的知识库（管理员不限）。
+    # 修复前返回全部知识库，导致用户能看到其他项目的规范库清单。
+    stmt = select(KnowledgeBase).order_by(KnowledgeBase.id)
+    scope = visible_kb_filter(user)
+    if scope is not None:
+        stmt = stmt.where(scope)
+    rows = session.execute(stmt).scalars().all()
     return ok([KnowledgeBaseOut.model_validate(r).model_dump() for r in rows])
 
 
@@ -57,7 +86,18 @@ def create_kb(
     ).scalars().first()
     if exists is not None:
         raise ConflictError(f"知识库编码已存在：{body.code}")
-    kb = KnowledgeBase(**body.model_dump())
+
+    payload = body.model_dump()
+    # 记录归属：非管理员只能把知识库建在自己被授权的项目下，
+    # 否则会出现「创建者无权访问自己刚建的库」或「越权挂到他人项目」。
+    if not is_admin(user):
+        allowed_projects = project_ids_of(user)
+        target_project = payload.get("project_id")
+        if target_project is not None and int(target_project) not in allowed_projects:
+            raise ForbiddenError(f"无权在项目 {target_project} 下创建知识库")
+
+    payload.setdefault("owner_id", user_id_of(user))
+    kb = KnowledgeBase(**payload)
     session.add(kb)
     session.flush()
     add_audit_log(session, AuditAction.CONFIG_CHANGE.value, object_type="knowledge_base", object_id=kb.id)
@@ -205,9 +245,7 @@ async def upload_document(
 
 @router.get("/kb/documents/{doc_id}", summary="文档详情")
 def get_document(doc_id: int, session: DbSession, user: CurrentUser) -> dict:
-    doc = session.get(SpecDoc, doc_id)
-    if doc is None:
-        raise NotFoundError(f"文档不存在：{doc_id}")
+    doc = _doc_or_403(session, user, doc_id)
     versions = session.execute(
         select(DocVersion).where(DocVersion.doc_id == doc_id).order_by(DocVersion.id.desc())
     ).scalars().all()
@@ -225,9 +263,7 @@ def update_document(
     user: Annotated[User, require_permission("kb:write")],
     body: SpecDocUpdate = Body(...),
 ) -> dict:
-    doc = session.get(SpecDoc, doc_id)
-    if doc is None:
-        raise NotFoundError(f"文档不存在：{doc_id}")
+    doc = _doc_or_403(session, user, doc_id)
     for key, value in body.model_dump(exclude_unset=True).items():
         if value is not None:
             setattr(doc, key, value)
@@ -243,9 +279,7 @@ async def parse_document_api(
     user: Annotated[User, require_permission("kb:write")],
     body: ParseRequest = Body(default=ParseRequest()),
 ) -> dict:
-    doc = session.get(SpecDoc, doc_id)
-    if doc is None:
-        raise NotFoundError(f"文档不存在：{doc_id}")
+    doc = _doc_or_403(session, user, doc_id)
     version = session.execute(
         select(DocVersion)
         .where(DocVersion.doc_id == doc_id, DocVersion.is_current.is_(True))
@@ -341,9 +375,7 @@ async def publish_document(
     user: Annotated[User, require_permission("kb:write")],
     body: PublishRequest = Body(...),
 ) -> dict:
-    doc = session.get(SpecDoc, doc_id)
-    if doc is None:
-        raise NotFoundError(f"文档不存在：{doc_id}")
+    doc = _doc_or_403(session, user, doc_id)
 
     if body.action == "publish":
         chunk_count = int(
@@ -392,9 +424,7 @@ async def extract_kg(
     from app.kg.extractor import build_graph_for_doc, link_intra_doc_clauses
     from app.kg.graph_store import get_graph_store
 
-    doc = session.get(SpecDoc, body.doc_id)
-    if doc is None:
-        raise NotFoundError(f"文档不存在：{body.doc_id}")
+    doc = _doc_or_403(session, user, body.doc_id)
 
     store = get_graph_store()
     store.init_schema()

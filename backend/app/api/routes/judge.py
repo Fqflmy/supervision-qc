@@ -9,6 +9,7 @@ from fastapi import APIRouter, Body, Query, Request
 from sqlalchemy import func, select
 
 from app.api.deps import CurrentUser, DbSession, client_ip, require_permission
+from app.core.authz import assert_report_access
 from app.config import settings
 from app.constants import (
     JUDGE_DIMENSION_LABELS,
@@ -96,6 +97,8 @@ async def score_report(
     report = session.get(EvalReport, report_id)
     if report is None:
         raise NotFoundError(f"报告不存在：{report_id}")
+    # 归属校验：报告可见性由所属任务决定
+    assert_report_access(user, session, report)
 
     citations, conclusions = _citations_of(report)
     outcome = await evaluate_report(
@@ -132,6 +135,8 @@ def list_reviews(report_id: uuid.UUID, session: DbSession, user: CurrentUser) ->
     report = session.get(EvalReport, report_id)
     if report is None:
         raise NotFoundError(f"报告不存在：{report_id}")
+    # 归属校验：报告可见性由所属任务决定
+    assert_report_access(user, session, report)
     reviews = session.execute(
         select(JudgeReview).where(JudgeReview.report_id == report_id).order_by(JudgeReview.id.desc())
     ).scalars().all()

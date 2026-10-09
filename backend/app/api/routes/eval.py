@@ -11,8 +11,16 @@ from sqlalchemy.orm import selectinload
 
 from app.agent.runner import run_evaluation
 from app.api.deps import CurrentUser, DbSession, client_ip, require_permission
+from app.core.authz import (
+    assert_kb_query_allowed,
+    assert_report_access,
+    assert_task_access,
+    is_admin,
+    project_ids_of,
+    visible_task_filter,
+)
 from app.constants import AuditAction, EvalState, REVIEWABLE_STATES
-from app.core.errors import ConflictError, NotFoundError
+from app.core.errors import ConflictError, ForbiddenError, NotFoundError
 from app.core.logging_conf import get_logger
 from app.core.response import ok, paginate
 from app.db import add_audit_log, utcnow
@@ -59,6 +67,23 @@ def create_task(
     user: CurrentUser,
     body: EvalTaskCreate = Body(...),
 ) -> dict:
+    # 项目授权：非管理员只能把任务建在自己被授权的项目下。
+    # 否则会出现「创建后自己都看不到」或「越权写入他人项目」。
+    if not is_admin(user):
+        allowed_projects = project_ids_of(user)
+        if body.project_id is None:
+            raise ForbiddenError("非管理员创建任务必须指定 project_id（且需在授权项目范围内）")
+        if int(body.project_id) not in allowed_projects:
+            logger.warning(
+                "越权创建任务被拒绝",
+                extra={"user_id": user.id, "project_id": body.project_id},
+            )
+            raise ForbiddenError(f"无权在项目 {body.project_id} 下创建评估任务")
+
+    # 知识库授权：任务指定的检索范围不能超出用户可访问的知识库
+    if body.kb_ids:
+        assert_kb_query_allowed(session, user, requested_kb_ids=body.kb_ids)
+
     options = dict(body.options or {})
     if body.kb_ids:
         options["kb_ids"] = body.kb_ids
@@ -105,15 +130,15 @@ async def run_task(
     task = session.get(EvalTask, task_id)
     if task is None:
         raise NotFoundError(f"任务不存在：{task_id}")
+    # 归属校验：非管理员只能访问本人发起或所属项目内的任务
+    assert_task_access(user, task)
     if task.current_state in {EvalState.COMPLETED.value, EvalState.CANCELLED.value} and not resume:
         raise ConflictError(f"任务已处于终态 {task.current_state}，如需重跑请使用 resume=true")
 
-    # 说明：本请求会在持有会话的情况下执行耗时数十秒的 Agent（多次 LLM 调用），
-    # 期间连接处于 idle in transaction。这本身不会出错，但历史上曾拖住检查点的
-    # CREATE INDEX CONCURRENTLY 造成锁死；现在已通过连接参数
-    # idle_in_transaction_session_timeout=60000 让数据库自动回收这类空闲事务。
-    # （不要在此处 session.close()：run_evaluation 依赖同一会话内的任务对象，
-    #   关闭会导致状态变更无法落库。）
+    # 说明：本请求会在持有会话的情况下执行耗时数十秒到数分钟的 Agent（多次 LLM 调用），
+    # 期间连接可能被服务端回收（空闲超时/连接池回收/网络抖动）。落库阶段已内置
+    # 「丢弃坏连接 + 重放」的自愈逻辑（见 agent/runner.py），无需在此特殊处理。
+    # （不要在此处 session.close()：会让 task 对象脱离会话，导致状态写不进库。）
     result = await run_evaluation(session, task, resume=resume)
     add_audit_log(
         session, AuditAction.EVAL_RESUME.value if resume else AuditAction.EVAL_CREATE.value,
@@ -137,6 +162,8 @@ def submit_task(
     task = session.get(EvalTask, task_id)
     if task is None:
         raise NotFoundError(f"任务不存在：{task_id}")
+    # 归属校验：非管理员只能访问本人发起或所属项目内的任务
+    assert_task_access(user, task)
     if task.current_state in {EvalState.PLANNING.value, EvalState.RETRIEVING.value, EvalState.MATCHING.value}:
         raise ConflictError(f"任务正在执行中：{task.current_state}")
 
@@ -170,7 +197,14 @@ def list_tasks(
     state: Optional[str] = None,
     mine: bool = Query(False, description="仅看我发起的任务"),
 ) -> dict:
+    # 默认只返回「当前用户可访问」的任务（本人发起 或 所属项目内）。
+    # 修复前这里是默认返回全部用户、全部项目的任务，属越权。
     stmt = select(EvalTask)
+
+    scope = visible_task_filter(user)
+    if scope is not None:
+        stmt = stmt.where(scope)
+
     if state:
         stmt = stmt.where(EvalTask.current_state == state)
     if mine:
@@ -199,6 +233,8 @@ def get_task(task_id: uuid.UUID, session: DbSession, user: CurrentUser) -> dict:
     ).scalars().first()
     if task is None:
         raise NotFoundError(f"任务不存在：{task_id}")
+    # 归属校验：非管理员只能查看本人发起或所属项目内的任务
+    assert_task_access(user, task)
 
     review = None
     if task.report is not None:
@@ -290,6 +326,8 @@ def get_report(
     ).scalars().first()
     if report is None:
         raise NotFoundError("该任务还没有生成报告，请先执行评估")
+    # 归属校验：报告的可见性由所属任务决定（防止拿到 task_id 就读他人报告）
+    assert_report_access(user, session, report)
 
     if format == "markdown":
         return ok({"report_id": str(report.id), "markdown": report.markdown or ""})
@@ -355,6 +393,8 @@ def resume_task(
     task = session.get(EvalTask, task_id)
     if task is None:
         raise NotFoundError(f"任务不存在：{task_id}")
+    # 归属校验：非管理员只能访问本人发起或所属项目内的任务
+    assert_task_access(user, task)
     if task.current_state not in {s.value for s in REVIEWABLE_STATES}:
         raise ConflictError(f"当前状态 {task.current_state} 不需要人工介入")
 

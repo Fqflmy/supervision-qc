@@ -270,6 +270,8 @@ npm run dev
 | `& $py scripts\e2e_check.py --live` | **真实模型全链路端到端** | 通过（五阶段 / 报告 4.8K 字 / Judge 2.9） |
 | `& $py scripts\verify_migration_parity.py` | **迁移一致性校验**（迁移 vs create_all 结构、可回退） | 通过 |
 | `& $py ../backend/scripts/verify_xss_sanitize.py` | **XSS 净化验证**（真实浏览器投放 14 种载荷） | 通过 |
+| `& $py -m pytest tests\test_authz.py` | **授权规则**（项目隔离 / 知识库授权判定） | 通过（19 项） |
+| `& $py -m pytest tests\test_isolation_api.py` | **越权回归**（A 项目用户无法读 B 项目任务/报告/规范库） | 通过（12 项） |
 | `& $py scripts\verify_deploy.py` | **容器化部署功能验收**（健康/鉴权/检索/问答/Agent/报告/Judge/看板/图谱/指标） | **通过 33/33** |
 | `& $py scripts\browser_e2e.py --base http://127.0.0.1:8080` | **浏览器端到端**（Edge 驱动 11 个页面 + 截图） | **通过 23/23**，控制台零错误 |
 | `& $py scripts\rebuild_index.py` | 换 Embedding 模型后重建全量索引 | 通过（94 分块 / 15.8 s） |

@@ -9,6 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, Body, Query, Request
 
 from app.api.deps import CurrentUser, DbSession, client_ip
+from app.core.authz import assert_kb_query_allowed
 from app.constants import AuditAction
 from app.core.logging_conf import get_logger
 from app.core.response import ok
@@ -54,11 +55,17 @@ async def search(
     body: RetrievalRequest = Body(...),
     namespace: Optional[str] = Query(None, description="限定知识库分片，缺省跨全部"),
 ) -> dict:
+    # 知识库授权：把请求范围收敛到用户可访问集合，越权直接 403。
+    # 修复前 kb_ids 未做任何校验，任何登录用户传参即可检索任意项目的规范库。
+    allowed_kb_ids = assert_kb_query_allowed(
+        session, user, requested_kb_ids=body.kb_ids, namespace=namespace
+    )
+
     pipeline = RetrievalPipeline(namespace=namespace)
     result = await pipeline.retrieve(
         body.query,
         session,
-        kb_ids=body.kb_ids,
+        kb_ids=allowed_kb_ids,
         specialty=body.specialty,
         top_k=body.top_k,
         enable_multi_query=body.enable_multi_query,
@@ -82,9 +89,14 @@ async def chat(
     namespace: Optional[str] = Query(None, description="限定知识库分片，缺省跨全部"),
 ) -> dict:
     started = time.perf_counter()
+    # 知识库授权（同 /search）：用户只能检索其授权范围内的规范库
+    allowed_kb_ids = assert_kb_query_allowed(
+        session, user, requested_kb_ids=body.kb_ids, namespace=namespace
+    )
+
     pipeline = RetrievalPipeline(namespace=namespace)
     result = await pipeline.retrieve(
-        body.query, session, kb_ids=body.kb_ids, specialty=body.specialty, top_k=body.top_k
+        body.query, session, kb_ids=allowed_kb_ids, specialty=body.specialty, top_k=body.top_k
     )
 
     # FR-RET-10：无依据时不允许模型自由发挥，直接返回兜底答案
