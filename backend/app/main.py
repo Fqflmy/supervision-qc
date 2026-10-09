@@ -52,6 +52,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if metrics_tip:
         logger.warning("可观测性提示", extra={"item": metrics_tip, "environment": settings.environment})
 
+    # 链路追踪状态：明确说明「启用/未启用及原因」。
+    # 很多项目配了环境变量却看不到数据，是因为调用的是原生 SDK 而非 LangChain 原语，
+    # 自动插桩不生效。这里在启动日志里直接给出结论，省去猜测。
+    from app.core.tracing import startup_message
+
+    tracing_msg = startup_message()
+    if "已启用" in tracing_msg:
+        logger.info("可观测性", extra={"item": tracing_msg})
+    else:
+        logger.warning("可观测性提示", extra={"item": tracing_msg})
+
     started = time.perf_counter()
     db_ok = init_db()
     logger.info(

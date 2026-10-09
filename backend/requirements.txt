@@ -24,6 +24,7 @@ redis>=5.0
 # --- 大模型与编排 ---
 langchain>=0.3
 langchain-core>=0.3
+langsmith>=0.2
 langchain-text-splitters>=0.3
 langgraph>=0.2
 langgraph-checkpoint-postgres>=2.0

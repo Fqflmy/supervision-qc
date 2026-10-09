@@ -460,6 +460,59 @@ async def run_evaluation(
     resume: bool = False,
     checkpointer_preference: Optional[str] = None,
 ) -> dict[str, Any]:
+    """执行一次评估任务（或从检查点续跑）。
+
+    外层负责追踪，真正的实现在 ``_run_evaluation_core``。
+    这样做的原因：函数体有 200 多行，若为插入追踪而整体重新缩进，
+    风险远大于收益；薄包装则完全不动原逻辑。
+    """
+    from app.core.tracing import trace_span
+
+    task_id = getattr(task, "id", None)
+    with trace_span(
+        "agent.evaluate",
+        run_type="chain",
+        inputs={
+            "task_id": str(task_id) if task_id else None,
+            "eval_type": getattr(task, "eval_type", None),
+            "title": getattr(task, "title", None),
+            "resume": resume,
+        },
+        tags=["agent", str(getattr(task, "eval_type", "") or "unknown")],
+        metadata={
+            "project_id": getattr(task, "project_id", None),
+            "user_id": getattr(task, "user_id", None),
+        },
+    ) as span:
+        result = await _run_evaluation_core(
+            session, task, resume=resume, checkpointer_preference=checkpointer_preference
+        )
+        # 只上报关键字段：完整 result 里有大量中间产物，全部上报会撑爆追踪
+        span.outputs = {
+            k: result.get(k)
+            for k in (
+                "current_state",
+                "iteration_count",
+                "matches",
+                "token_used",
+                "elapsed_ms",
+                "checkpoint_backend",
+                "degraded",
+                "report_id",
+                "guard_reason",
+            )
+            if k in result
+        }
+        return result
+
+
+async def _run_evaluation_core(
+    session: Session,
+    task: EvalTask,
+    *,
+    resume: bool = False,
+    checkpointer_preference: Optional[str] = None,
+) -> dict[str, Any]:
     """执行一次评估任务（或从检查点续跑）。"""
     started = time.perf_counter()
     payload = dict(task.input_payload or {})

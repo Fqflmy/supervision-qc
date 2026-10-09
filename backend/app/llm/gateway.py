@@ -108,6 +108,38 @@ class LlmGateway:
         if use_fallback and self.fallback.available and self.fallback.base_url != self.primary.base_url:
             targets.append(self.fallback)
 
+        # 追踪整次 chat 调用（含重试与降级），span 上带 scene/model/token，
+        # 便于在 LangSmith 里按场景看耗时与成本。
+        from app.core.tracing import trace_span
+
+        with trace_span(
+            f"llm.chat[{scene}]",
+            run_type="llm",
+            inputs={"scene": scene, "model": model or self.primary.model, "messages": payload},
+            tags=["llm", scene],
+            metadata={"provider": self.primary.base_url, "scene": scene},
+        ) as span:
+            return await self._chat_with_fallback(
+                payload,
+                targets=targets,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                scene=scene,
+                span=span,
+            )
+
+    async def _chat_with_fallback(
+        self,
+        payload: list[ChatMessage],
+        *,
+        targets: list[ModelTarget],
+        model: Optional[str],
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+        scene: str,
+        span: Optional[Any] = None,
+    ) -> LlmResponse:
         last_error: Optional[Exception] = None
         for target in targets:
             for attempt in range(1, self.max_retries + 1):
@@ -122,6 +154,18 @@ class LlmGateway:
                         is_fallback=target.label == "fallback",
                     )
                     _accumulate(response.usage)
+                    if span is not None:
+                        span.outputs = {
+                            "content": response.content,
+                            "model": response.model,
+                            "usage": {
+                                "prompt_tokens": response.usage.prompt_tokens,
+                                "completion_tokens": response.usage.completion_tokens,
+                                "total_tokens": response.usage.total_tokens,
+                            },
+                            "latency_ms": response.latency_ms,
+                            "is_fallback": response.is_fallback,
+                        }
                     return response
                 except Exception as exc:  # noqa: BLE001 - 统一转 LLMError
                     last_error = exc
@@ -138,6 +182,8 @@ class LlmGateway:
                     if attempt < self.max_retries:
                         backoff = settings.llm_retry_backoff_seconds * (2 ** (attempt - 1))
                         await asyncio.sleep(backoff)
+        if span is not None:
+            span.outputs = {"error": str(last_error)[:500], "scene": scene}
         raise LLMError(
             f"大模型调用失败，已尝试 {len(targets)} 个模型端点",
             details={"last_error": str(last_error)[:500], "scene": scene},

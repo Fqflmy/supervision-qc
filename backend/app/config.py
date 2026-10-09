@@ -228,6 +228,17 @@ class Settings(BaseSettings):
     #: 是否允许匿名抓取 /metrics。仅适合内网或开发环境；
     #: 生产环境应改用 metrics_bearer_token，否则端点返回 403 并提示配置方式。
     metrics_public: bool = False
+
+    # ---------- 链路追踪（LangSmith）----------
+    #: 是否启用 LangSmith 追踪。未配置 API Key 时会自动关闭（不报错）。
+    langsmith_tracing: bool = True
+    #: LangSmith API Key。留空则追踪关闭 —— 追踪是增强能力，不应阻止启动。
+    langsmith_api_key: str = ""
+    #: 追踪数据归属的项目名（LangSmith 控制台中的 Project）
+    langsmith_project: str = "supervision-qc"
+    #: 是否采集提示词与文档正文。关闭后仅上报形状（长度/条数），
+    #: 适合工程资料含敏感信息的场景。
+    langsmith_capture_content: bool = True
     #: 逗号分隔字符串；用 settings.cors_origin_list 取列表
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080"
 

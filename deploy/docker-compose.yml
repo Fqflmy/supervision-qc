@@ -203,6 +203,14 @@ services:
       SUPERVISION_METRICS_BEARER_TOKEN: ${METRICS_BEARER_TOKEN:-}
       # 是否允许匿名抓取 /metrics。仅内网/开发可设 true；生产用上面的令牌。
       SUPERVISION_METRICS_PUBLIC: ${METRICS_PUBLIC:-false}
+      # ---- 链路追踪（LangSmith）----
+      # 必须显式声明，否则 deploy/.env 里的变量传不进容器（compose 会拦截）。
+      # 未配置 API Key 时追踪自动关闭，不影响功能。
+      SUPERVISION_LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+      SUPERVISION_LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-supervision-qc}
+      SUPERVISION_LANGSMITH_TRACING: ${LANGSMITH_TRACING:-true}
+      # 工程资料可能含敏感信息时设为 false：只上报形状（长度/条数），不采集正文
+      SUPERVISION_LANGSMITH_CAPTURE_CONTENT: ${LANGSMITH_CAPTURE_CONTENT:-true}
       # true=启动时幂等写入示例规范并建立索引；false=只起服务
       SUPERVISION_AUTO_SEED: ${AUTO_SEED:-true}
       TZ: Asia/Shanghai

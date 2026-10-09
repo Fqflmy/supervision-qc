@@ -277,6 +277,9 @@ npm run dev
 | `& $py -m pytest tests\test_agent_tools.py` | **工具调用权限**（工具级授权/参数校验/调用审计） | 通过（21 项） |
 | `& $py -m pytest tests\test_user_management_api.py` | **用户与项目授权管理** | 通过（9 项） |
 | `& $py -m pytest tests\test_metrics_endpoint.py` | **指标端点与抓取鉴权**（Prometheus 文本格式） | 通过（20 项） |
+| `& $py -m pytest tests\test_tracing.py` | **链路追踪**（优雅关闭/空操作/形状压缩/接入点） | 通过（15 项） |
+| `& $py scripts\verify_langsmith.py` | **LangSmith 接入验证**（Key 有效性 + 数据可查回） | 通过 |
+| `& $py scripts\verify_langsmith_agent.py` | **全链路追踪验证**（真实任务 + 层级核对） | 通过（18 span） |
 | `& $py scripts\verify_isolation_live.py` | **真实账号隔离验证**（对比 admin/engineer/viewer 可见范围） | 通过 |
 | `& $py scripts\verify_deploy.py` | **容器化部署功能验收**（健康/鉴权/检索/问答/Agent/报告/Judge/看板/图谱/指标） | **通过 33/33** |
 | `& $py scripts\browser_e2e.py --base http://127.0.0.1:8080` | **浏览器端到端**（Edge 驱动 13 个页面 + 截图） | **通过 28/28**（含用户管理页与角色隔离），控制台零错误 |

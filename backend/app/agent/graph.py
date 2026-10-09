@@ -168,6 +168,14 @@ def _usage_tokens() -> int:
 # --------------------------------------------------------------------------- #
 async def planning_node(state: AgentState) -> dict:
     """任务拆解（FR-AGT-03）。"""
+    from app.core.tracing import trace_span as _trace_span
+
+    with _trace_span("agent.planning", run_type="chain") as _span:
+        return _span.done(await _planning_node_impl(state, _span))
+
+
+async def _planning_node_impl(state: AgentState, _span: Any) -> dict:
+    """planning_node 的实现（由包装函数注入追踪 span）。"""
     started = time.perf_counter()
     ctx = get_ctx()
     guard = ctx.guard
@@ -260,6 +268,14 @@ def _fallback_subtasks(specialty: str, payload: dict) -> list[dict]:
 
 async def retrieval_node(state: AgentState) -> dict:
     """规范检索（FR-AGT-04）：对每个子任务做多阶段检索，命中缓存不重复消耗迭代。"""
+    from app.core.tracing import trace_span as _trace_span
+
+    with _trace_span("agent.retrieval", run_type="retriever") as _span:
+        return _span.done(await _retrieval_node_impl(state, _span))
+
+
+async def _retrieval_node_impl(state: AgentState, _span: Any) -> dict:
+    """retrieval_node 的实现（由包装函数注入追踪 span）。"""
     started = time.perf_counter()
     ctx = get_ctx()
     guard = ctx.guard
@@ -348,6 +364,14 @@ async def retrieval_node(state: AgentState) -> dict:
 
 async def matching_node(state: AgentState) -> dict:
     """条款匹配（FR-AGT-05）：证据 vs 条款逐条比对。"""
+    from app.core.tracing import trace_span as _trace_span
+
+    with _trace_span("agent.clause_matching", run_type="chain") as _span:
+        return _span.done(await _matching_node_impl(state, _span))
+
+
+async def _matching_node_impl(state: AgentState, _span: Any) -> dict:
+    """matching_node 的实现（由包装函数注入追踪 span）。"""
     started = time.perf_counter()
     ctx = get_ctx()
     guard = ctx.guard
@@ -457,6 +481,14 @@ async def matching_node(state: AgentState) -> dict:
 
 async def analysis_node(state: AgentState) -> dict:
     """结果分析（FR-AGT-06）：汇总不符合项、原因与整改建议。"""
+    from app.core.tracing import trace_span as _trace_span
+
+    with _trace_span("agent.analysis", run_type="chain") as _span:
+        return _span.done(await _analysis_node_impl(state, _span))
+
+
+async def _analysis_node_impl(state: AgentState, _span: Any) -> dict:
+    """analysis_node 的实现（由包装函数注入追踪 span）。"""
     started = time.perf_counter()
     ctx = get_ctx()
     guard = ctx.guard
@@ -535,6 +567,14 @@ def _fallback_analysis(matches: Sequence[dict]) -> dict:
 
 async def report_node(state: AgentState) -> dict:
     """报告生成（FR-AGT-07）。"""
+    from app.core.tracing import trace_span as _trace_span
+
+    with _trace_span("agent.report_generation", run_type="chain") as _span:
+        return _span.done(await _report_node_impl(state, _span))
+
+
+async def _report_node_impl(state: AgentState, _span: Any) -> dict:
+    """report_node 的实现（由包装函数注入追踪 span）。"""
     started = time.perf_counter()
     ctx = get_ctx()
     guard = ctx.guard

@@ -193,6 +193,59 @@ class RetrievalPipeline:
         enable_kg_expand: Optional[bool] = None,
         fused_input: Optional[list[FusedItem]] = None,
     ) -> RetrievalResult:
+        """混合检索。外层负责追踪，实现在 ``_retrieve_core``。
+
+        追踪 span 覆盖查询理解、Multi-Query、BM25∥FAISS 召回、RRF 融合、
+        图谱扩展与重排，便于在 LangSmith 里看到「哪个环节慢、召回多少」。
+        """
+        from app.core.tracing import trace_span
+
+        with trace_span(
+            "retrieval",
+            run_type="retriever",
+            inputs={
+                "query": query,
+                "kb_ids": list(kb_ids) if kb_ids else None,
+                "specialty": specialty,
+                "top_k": top_k,
+                "namespace": self.namespace,
+            },
+            tags=["retrieval"],
+            metadata={"namespaces": self._namespaces()},
+        ) as span:
+            result = await self._retrieve_core(
+                query,
+                session,
+                kb_ids=kb_ids,
+                specialty=specialty,
+                top_k=top_k,
+                enable_multi_query=enable_multi_query,
+                enable_kg_expand=enable_kg_expand,
+                fused_input=fused_input,
+            )
+            span.outputs = {
+                "clauses": len(result.clauses),
+                "no_evidence": result.no_evidence,
+                "top_score": result.debug.get("rerank_top_score"),
+                "threshold": result.debug.get("threshold"),
+                "latency_ms": result.latency_ms,
+                "sub_queries": result.sub_queries,
+                "degraded": result.degraded,
+            }
+            return result
+
+    async def _retrieve_core(
+        self,
+        query: str,
+        session: Session,
+        *,
+        kb_ids: Optional[Sequence[int]] = None,
+        specialty: Optional[str] = None,
+        top_k: Optional[int] = None,
+        enable_multi_query: Optional[bool] = None,
+        enable_kg_expand: Optional[bool] = None,
+        fused_input: Optional[list[FusedItem]] = None,
+    ) -> RetrievalResult:
         started = time.perf_counter()
         top_n = top_k or settings.reranker_top_n
 
