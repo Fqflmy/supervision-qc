@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     工程监理质量智能评估系统 —— 一键启动脚本（全容器方案，Windows / PowerShell）
 
@@ -57,6 +57,30 @@ function Write-Step([string]$Text) { Write-Host "`n=== $Text ===" -ForegroundCol
 function Write-Ok([string]$Text) { Write-Host "  [OK] $Text" -ForegroundColor Green }
 function Write-Warn2([string]$Text) { Write-Host "  [!]  $Text" -ForegroundColor Yellow }
 function Write-Err([string]$Text) { Write-Host "  [X] $Text" -ForegroundColor Red }
+
+<#
+读取容器日志文本。
+
+为什么需要这个封装：docker 会把容器 stderr 的内容（例如 api 启动时的安全提示
+「检测到不安全的 JWT 密钥…」）转发到自己的 stderr。在 $ErrorActionPreference='Stop'
+下，PowerShell 会把这类 stderr 输出当成**终止性错误**，导致脚本在「服务其实已经
+成功启动」的情况下以非 0 退出码结束 —— 极易被误判为启动失败。
+
+这里临时降为 Continue，只取文本、不因 stderr 中断。
+#>
+function Get-ContainerLogs([string]$Name) {
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        return (& docker logs $Name 2>&1 | Out-String)
+    }
+    catch {
+        return ''
+    }
+    finally {
+        $ErrorActionPreference = $previous
+    }
+}
 
 # docker 会把镜像下载/构建进度写到 stderr；在 $ErrorActionPreference='Stop' 下
 # PowerShell 会把这类输出当成终止性错误，导致 docker 明明成功、脚本却提前退出。
@@ -253,11 +277,14 @@ if (-not $NoWait) {
 # 5. 数据初始化状态（由 api 容器入口自动完成）
 # --------------------------------------------------------------------------- #
 Write-Step '数据初始化检查'
-$seedInfo = (& docker logs supervision-api 2>&1 | Select-String -Pattern '\[entrypoint\]|\[DONE\] 本次写入|已存在（doc_id' | Select-Object -Last 3)
+# 经封装读取：docker 会把容器 stderr（如 api 的安全提示）转发到自身 stderr，
+# 直接用管道会在 $ErrorActionPreference='Stop' 下误判为失败。
+$apiLogs = Get-ContainerLogs 'supervision-api'
+$seedInfo = ($apiLogs -split "`n" | Select-String -Pattern '\[entrypoint\]|\[DONE\] 本次写入|已存在（doc_id' | Select-Object -Last 3)
 if ($seedInfo) {
     foreach ($line in $seedInfo) { Write-Host "  $($line.Line.Trim())" -ForegroundColor DarkGray }
 }
-$ready = (& docker logs supervision-api 2>&1 | Select-String -Pattern '\[entrypoint\] 初始化完成|\[DONE\] 本次写入')
+$ready = ($apiLogs -split "`n" | Select-String -Pattern '\[entrypoint\] 初始化完成|\[DONE\] 本次写入')
 if ($ready) {
     Write-Ok '示例规范与向量索引已就绪'
 } else {

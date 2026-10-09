@@ -30,6 +30,11 @@ RUN if [ "$INSTALL_MODELS" = "1" ]; then \
 
 COPY app ./app
 COPY scripts ./scripts
+# alembic.ini 与 alembic/ 迁移脚本必须打进镜像：
+# 容器入口会用 `alembic upgrade head` 升级表结构（在数据初始化之前执行），
+# 缺失时会报 "Path doesn't exist: /app/alembic" 并导致容器反复重启。
+COPY alembic.ini ./
+COPY alembic ./alembic
 COPY pytest.ini ./
 
 # 启动入口：等待数据库 → 幂等初始化示例数据与索引 → 启动 API

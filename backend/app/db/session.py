@@ -135,6 +135,50 @@ def alembic_has_version() -> bool:
         return False
 
 
+def existing_table_count() -> int:
+    """当前库已有的业务表数量（排除 alembic_version）。
+
+    用于判断「存量库」：有表但没有版本记录 = 此前由 create_all 建的库，
+    需要先纳管再升级，否则 upgrade 会尝试重复建表而失败。
+    """
+    from sqlalchemy import inspect
+
+    try:
+        names = [n for n in inspect(get_engine()).get_table_names() if n != "alembic_version"]
+        return len(names)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def migrate_to_latest() -> None:
+    """把库结构升级到最新迁移版本；对存量库自动先纳管。
+
+    这是修复「一键启动失败」的关键：
+
+    此前 ``init_db`` 直接跑 ``alembic upgrade head``，但**存量库**（旧版本用
+    ``create_all`` 建的表）没有 ``alembic_version`` 记录，upgrade 会从 0001 开始
+    重放建表语句 -> 表已存在而报错，库结构停在中途，新字段（如
+    ``knowledge_base.project_id``）永远不会出现。
+
+    更糟的是启动顺序：容器入口先跑 ``seed_data.py``（要读新字段），
+    再启动 uvicorn 触发迁移 —— 种子必然失败并打印「初始化失败」，
+    而服务照常起来，症状变成「示例数据莫名其妙不见了」。
+
+    因此这里先判断：**有表但无版本记录 = 存量库**，先 ``stamp 0001``
+    把基线标记为已应用，再 upgrade 到最新。全新库则直接从 0001 建起。
+    """
+    from alembic import command
+
+    config = _alembic_config()
+    if not alembic_has_version() and existing_table_count() > 0:
+        logger.warning(
+            "检测到未纳管迁移的存量库，先标记基线再升级",
+            extra={"tables": existing_table_count(), "baseline": "0001"},
+        )
+        command.stamp(config, "0001")
+    command.upgrade(config, "head")
+
+
 def init_db(create_all: bool = True) -> bool:
     """初始化数据库结构。返回是否成功连接。
 
@@ -157,9 +201,7 @@ def init_db(create_all: bool = True) -> bool:
     mode = resolve_schema_mode()
     if mode == "alembic":
         try:
-            from alembic import command
-
-            command.upgrade(_alembic_config(), "head")
+            migrate_to_latest()
             logger.info(
                 "数据库结构已通过 alembic 迁移到最新版本",
                 extra={"mode": mode, "environment": settings.environment},
