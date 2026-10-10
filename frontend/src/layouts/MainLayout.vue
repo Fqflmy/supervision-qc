@@ -54,6 +54,7 @@ import {
   ChatDotRound,
   Checked,
   DataBoard,
+  Document,
   Files,
   Medal,
   Setting,
@@ -97,6 +98,10 @@ const allMenus = [
     permAny: ['kg:write', 'eval:write'] as Permission[],
   },
   { name: 'chat', title: '智能问答', icon: ChatDotRound, perm: 'retrieval:read' as Permission },
+  // 评估报告（只读视角）：任何具备 eval:read 的角色都能查看**其授权项目内**的报告。
+  // 与「评估任务」（发起方工作台，需 eval:write）区分 —— 只读用户不该看到发起与执行入口，
+  // 但确实需要查看报告（此前后端放行、前端无入口，属「有权限没入口」）。
+  { name: 'reports', title: '评估报告', icon: Document, perm: 'eval:read' as Permission },
   // 评估任务：发起评估是工程师的职责
   { name: 'evaluation', title: '评估任务', icon: Checked, perm: 'eval:write' as Permission },
   {

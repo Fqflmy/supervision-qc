@@ -16,14 +16,14 @@ import { roleCan, roleIsAdmin, roleLabel as labelOfRole, type Permission } from 
  * - ``kb_manager`` 规范维护 -> 知识库管理
  * - ``engineer``   发起质量评估 -> 评估任务
  * - ``expert``     人工复核 -> 质量评审（待复核队列）
- * - ``viewer``     只读查询 -> 智能问答（唯一可访问入口）
+ * - ``viewer``     只读查看授权项目的报告 -> 评估报告
  */
 export const ROLE_HOME: Record<string, string> = {
   admin: 'users',
   kb_manager: 'knowledge',
   engineer: 'evaluation',
   expert: 'judge',
-  viewer: 'chat',
+  viewer: 'reports',
 }
 
 export function homeForRole(role?: string | null): string {

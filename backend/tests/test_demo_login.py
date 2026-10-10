@@ -98,6 +98,7 @@ def test_identity_home_matches_backend_role_capability(client, monkeypatch):
         "graph": ["kg:write", "eval:write"],
         "chat": ["retrieval:read"],
         "evaluation": ["eval:write"],
+        "reports": ["eval:read"],
         "judge": ["eval:review", "judge:write"],
     }
 

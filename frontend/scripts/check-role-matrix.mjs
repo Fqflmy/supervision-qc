@@ -62,6 +62,8 @@ const MENUS = [
   { name: 'graph', title: '知识图谱', permAny: ['kg:write', 'eval:write'] },
   { name: 'chat', title: '智能问答', perm: 'retrieval:read' },
   { name: 'evaluation', title: '评估任务', perm: 'eval:write' },
+  // 评估报告（只读视角）：所有具备 eval:read 的角色都应能查看授权项目内的报告
+  { name: 'reports', title: '评估报告', perm: 'eval:read' },
   { name: 'judge', title: '质量评审', permAny: ['eval:review', 'judge:write'] },
   { name: 'users', title: '用户与授权', perm: 'admin:*' },
   { name: 'system', title: '系统与审计', perm: 'admin:*' },
@@ -93,11 +95,21 @@ function visibleMenus(grants) {
  * 但两者并不相同（viewer 无 judge）。断言里会校验「各角色菜单各不相同」。
  */
 const EXPECTED_MENUS = {
-  admin: ['dashboard', 'knowledge', 'graph', 'chat', 'evaluation', 'judge', 'users', 'system'],
-  kb_manager: ['knowledge', 'graph', 'chat'],
-  engineer: ['knowledge', 'graph', 'chat', 'evaluation'],
-  expert: ['knowledge', 'chat', 'judge'],
-  viewer: ['knowledge', 'chat'],
+  admin: [
+    'dashboard',
+    'knowledge',
+    'graph',
+    'chat',
+    'evaluation',
+    'reports',
+    'judge',
+    'users',
+    'system',
+  ],
+  kb_manager: ['knowledge', 'graph', 'chat', 'reports'],
+  engineer: ['knowledge', 'graph', 'chat', 'evaluation', 'reports'],
+  expert: ['knowledge', 'chat', 'reports', 'judge'],
+  viewer: ['knowledge', 'chat', 'reports'],
 }
 
 function sortedEqual(a, b) {
@@ -232,7 +244,7 @@ const ROLE_HOME = {
   kb_manager: 'knowledge',
   engineer: 'evaluation',
   expert: 'judge',
-  viewer: 'chat',
+  viewer: 'reports',
 }
 for (const role of allRoles) {
   const home = ROLE_HOME[role]

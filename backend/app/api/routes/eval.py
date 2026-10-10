@@ -96,7 +96,11 @@ def _progress_value(state: str) -> float:
 def create_task(
     request: Request,
     session: DbSession,
-    user: CurrentUser,
+    # 创建任务需要 eval:write。
+    # ⚠️ 此前只要求登录（CurrentUser），于是**只读用户也能创建评估任务** ——
+    # 虽然执行还需 eval:write 而挡住了一步，但创建本身已属越权：
+    # 会污染任务列表、让只读账号产生自己看不懂的数据。
+    user: Annotated[User, require_permission("eval:write")],
     body: EvalTaskCreate = Body(...),
 ) -> dict:
     # 项目授权：非管理员只能把任务建在自己被授权的项目下。

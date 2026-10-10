@@ -77,6 +77,14 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '任务详情', hidden: true, perm: 'eval:read' },
       },
       {
+        // 评估报告（只读视角）：任何有 eval:read 的角色都能看**授权项目内**的报告。
+        // 与 evaluation（发起方工作台，需 eval:write）分开，让只读用户也有入口。
+        path: 'reports',
+        name: 'reports',
+        component: () => import('@/views/ReportListView.vue'),
+        meta: { title: '评估报告', icon: 'Document', perm: 'eval:read' },
+      },
+      {
         path: 'judge',
         name: 'judge',
         component: () => import('@/views/JudgeView.vue'),

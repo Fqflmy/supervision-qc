@@ -152,8 +152,8 @@ def demo_identities() -> dict:
         {
             "role": "viewer",
             "label": "普通用户",
-            "description": "只读查询规范原文与评估报告",
-            "home": "chat",
+            "description": "只读查看授权项目的评估报告与规范原文",
+            "home": "reports",
             "username": "viewer",
             "password": password,
         },

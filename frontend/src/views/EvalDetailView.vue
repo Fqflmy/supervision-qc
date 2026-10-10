@@ -8,8 +8,21 @@
             {{ stateLabel(detail?.current_state) }}
           </span>
           <el-button size="small" @click="router.back()">返回</el-button>
-          <el-button size="small" type="primary" :loading="running" @click="run(false)">重新执行</el-button>
+          <!-- 执行会调用多次 LLM 且可能作废已签发的复核结果，因此仅对具备
+               eval:write 的角色显示。此前没有门控 —— 只读用户也能看到
+               「重新执行」，点开先弹「重跑将作废签认」的确认框、
+               确认后才被后端 403，体验上等于「能点但必然失败」。 -->
           <el-button
+            v-if="auth.canStartEval"
+            size="small"
+            type="primary"
+            :loading="running"
+            @click="run(false)"
+          >
+            重新执行
+          </el-button>
+          <el-button
+            v-if="auth.canReview"
             size="small"
             :disabled="!canReviewAction"
             :loading="resuming"
