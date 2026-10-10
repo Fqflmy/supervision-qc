@@ -102,7 +102,25 @@ class User(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    # ---- 人员身份绑定 ----
+    # 账号（username/password/role）是**登录凭据与权限载体**；
+    # 下面这些字段绑定「这个账号对应现实中的谁」。
+    # 为什么必须分开：评估报告要签认到**具体的人**（监理规范要求责任到人），
+    # 而账号名往往是无意义的登录 ID（如 eng_zhao）。
     full_name: Mapped[Optional[str]] = mapped_column(String(64))
+    #: 工号。单位内部唯一标识，用于与人事/项目台账对齐。
+    employee_no: Mapped[Optional[str]] = mapped_column(String(64), unique=True)
+    #: 所属单位（建设单位 / 监理单位 / 施工单位…）
+    org_name: Mapped[Optional[str]] = mapped_column(String(128))
+    #: 所属部门（如「项目监理部」「技术质量部」）
+    department: Mapped[Optional[str]] = mapped_column(String(128))
+    #: 职务/岗位（如「总监理工程师」「专业监理工程师」）
+    position: Mapped[Optional[str]] = mapped_column(String(64))
+    #: 执业资格证号（如注册监理工程师证号），监理场景常需在报告中体现
+    cert_no: Mapped[Optional[str]] = mapped_column(String(64))
+    #: 签认署名。留空时报告与审计展示回退到 full_name。
+    #: 用文本而非签名图片：签名图需额外存储与合规流程，当前阶段文本署名已满足留痕要求。
+    signature: Mapped[Optional[str]] = mapped_column(String(64))
     email: Mapped[Optional[str]] = mapped_column(String(128))
     phone: Mapped[Optional[str]] = mapped_column(String(32))
     password_hash: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -110,6 +128,10 @@ class User(Base, TimestampMixin):
     project_ids: Mapped[Optional[list]] = mapped_column(JSONType, default=list)
     specialties: Mapped[Optional[list]] = mapped_column(JSONType, default=list)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    #: 是否要求下次登录后修改密码。
+    #: 管理员重置密码时置 True —— 与「首次登录须改初始密码」的安全要求一致，
+    #: 避免管理员设置的临时密码被长期使用。
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     failed_login_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     locked_until: Mapped[Optional[dt.datetime]] = mapped_column(DateTime(timezone=True))
     last_login_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime(timezone=True))

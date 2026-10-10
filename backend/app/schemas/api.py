@@ -43,12 +43,22 @@ class RefreshRequest(BaseModel):
 class UserOut(BaseModel):
     id: int
     username: str
+    # ---- 人员身份（账号与身份分离：username 是登录凭据，下面是「这个人是谁」）----
     full_name: Optional[str] = None
+    employee_no: Optional[str] = None
+    org_name: Optional[str] = None
+    department: Optional[str] = None
+    position: Optional[str] = None
+    cert_no: Optional[str] = None
+    signature: Optional[str] = None
     email: Optional[str] = None
+    phone: Optional[str] = None
     role: str
     specialties: list[str] = Field(default_factory=list)
     project_ids: list[int] = Field(default_factory=list)
     is_active: bool = True
+    #: 管理员重置密码后置 True，前端据此提示用户尽快自行修改。
+    must_change_password: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -56,7 +66,13 @@ class UserOut(BaseModel):
 class UserCreate(BaseModel):
     username: str = Field(..., min_length=2, max_length=64)
     password: str = Field(..., min_length=8, max_length=128)
-    full_name: Optional[str] = None
+    full_name: Optional[str] = Field(default=None, max_length=64)
+    employee_no: Optional[str] = Field(default=None, max_length=64)
+    org_name: Optional[str] = Field(default=None, max_length=128)
+    department: Optional[str] = Field(default=None, max_length=128)
+    position: Optional[str] = Field(default=None, max_length=64)
+    cert_no: Optional[str] = Field(default=None, max_length=64)
+    signature: Optional[str] = Field(default=None, max_length=64)
     email: Optional[str] = None
     role: str = Field("engineer", pattern="^(admin|kb_manager|engineer|expert|viewer)$")
     specialties: list[str] = Field(default_factory=list)

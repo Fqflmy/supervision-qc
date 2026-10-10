@@ -35,7 +35,9 @@
               >{{ crumb.label }}</span>
             </el-breadcrumb-item>
           </el-breadcrumb>
-          <div class="app-header__title">{{ currentTitle }}</div>
+          <!-- 顶层页时面包屑已等于标题，再显示标题就是重复（视觉冗余）；
+               只有详情页（面包屑有层级）才需要标题。 -->
+          <div v-if="breadcrumbs.length > 1" class="app-header__title">{{ currentTitle }}</div>
         </div>
         <div class="app-header__right">
           <el-tag v-if="healthStatus" size="small" :type="healthStatus === 'ok' ? 'success' : 'warning'" effect="plain">
@@ -50,6 +52,17 @@
         </div>
       </header>
       <main class="app-content">
+        <!-- 管理员重置过密码后提醒用户自行修改。
+             系统暂无自助改密页面，因此这里只作提示 —— 不假装拦截。 -->
+        <el-alert
+          v-if="auth.user?.must_change_password"
+          type="warning"
+          show-icon
+          :closable="false"
+          style="margin-bottom: 12px"
+          title="你的密码已被管理员重置"
+          description="为账号安全，请尽快自行修改密码；如需帮助请联系系统管理员。"
+        />
         <router-view v-slot="{ Component }">
           <component :is="Component" />
         </router-view>

@@ -182,7 +182,13 @@ async def seed(reset: bool = False) -> int:
                 admin_password = settings.seed_default_admin_password
                 admin = User(
                     username="admin",
-                    full_name="系统管理员",
+                    # ---- 人员身份（账号与身份分离）----
+                    full_name="张明远",
+                    employee_no="IT-2020-001",
+                    org_name="某监理有限公司",
+                    department="信息中心",
+                    position="系统管理员",
+                    signature="张明远",
                     password_hash=hash_password(admin_password),
                     role="admin",
                     specialties=["结构工程"],
@@ -214,16 +220,36 @@ async def seed(reset: bool = False) -> int:
             from app.core.security import hash_password
 
             demo_users = [
-                ("engineer", "监理工程师", ["结构工程"], project.id),
-                ("expert", "审核专家", ["结构工程"], project.id),
-                ("viewer", "只读用户", ["结构工程"], project.id),
+                # (账号, 姓名, 工号, 单位, 部门, 岗位, 签认署名, 专业, 项目)
+                (
+                    "engineer", "赵建国", "JL-2019-018",
+                    "某监理有限公司", "项目监理部", "专业监理工程师", "赵建国",
+                    ["结构工程"], project.id,
+                ),
+                (
+                    "expert", "李慧敏", "JL-2015-006",
+                    "某监理有限公司", "技术质量部", "总监理工程师", "李慧敏",
+                    ["结构工程"], project.id,
+                ),
+                (
+                    "viewer", "王振宇", "JS-2024042",
+                    "某建设单位", "工程管理部", "工程管理专员", "王振宇",
+                    ["结构工程"], project.id,
+                ),
                 # 知识库管理员：规范维护职责（上传/解析/构建图谱）。
                 # 此前权限表与菜单规则都覆盖了该角色，却没有账号可用，
                 # 属「文档里有、实际用不到」——这里补上使其真正可用。
-                ("kb_manager", "知识库管理员", ["通用"], project.id),
+                (
+                    "kb_manager", "陈静", "KB-2021-003",
+                    "某监理有限公司", "技术质量部", "标准管理员", "陈静",
+                    ["通用"], project.id,
+                ),
             ]
             created_any = False
-            for role, full_name, specialties, pid in demo_users:
+            for (
+                role, full_name, employee_no, org_name, department, position, signature,
+                specialties, pid,
+            ) in demo_users:
                 exists = session.execute(
                     select(User).where(User.username == role)
                 ).scalars().first()
@@ -232,7 +258,17 @@ async def seed(reset: bool = False) -> int:
                 session.add(
                     User(
                         username=role,
+                        # ---- 人员身份（账号与身份分离）----
+                        # 账号是登录 ID（engineer/expert…），下面是现实中的人。
+                        # 之前这里把 full_name 填成角色名（「监理工程师」），
+                        # 导致「人员身份」列与「角色」列显示同一个词 ——
+                        # 报告签认也无法落到具体的人（监理规范要求责任到人）。
                         full_name=full_name,
+                        employee_no=employee_no,
+                        org_name=org_name,
+                        department=department,
+                        position=position,
+                        signature=signature,
                         password_hash=hash_password(settings.seed_default_admin_password),
                         role=role,
                         project_ids=[pid],
@@ -243,8 +279,8 @@ async def seed(reset: bool = False) -> int:
             if created_any:
                 session.flush()
                 print(
-                    "[OK] 创建示例角色账号 engineer / expert / viewer"
-                    "（密码同管理员，均已绑定示例项目 DEMO-001）"
+                    "[OK] 创建示例角色账号 engineer / expert / viewer / kb_manager"
+                    "（密码同管理员，均已绑定示例项目 DEMO-001，并带人员身份信息）"
                 )
 
         kb = session.execute(select(KnowledgeBase).where(KnowledgeBase.code == "KB-NATIONAL")).scalars().first()

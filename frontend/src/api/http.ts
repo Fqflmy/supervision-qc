@@ -119,7 +119,9 @@ export const api = {
   post: <T>(url: string, data?: unknown, params?: Record<string, unknown>) =>
     request<T>({ method: 'POST', url, data, params }),
   patch: <T>(url: string, data?: unknown) => request<T>({ method: 'PATCH', url, data }),
-  delete: <T>(url: string) => request<T>({ method: 'DELETE', url }),
+  // params 用于少数带查询参数的 DELETE（如删除用户时的 hard=true 物理删除开关）
+  delete: <T>(url: string, params?: Record<string, unknown>) =>
+    request<T>({ method: 'DELETE', url, params }),
   upload: <T>(url: string, form: FormData) =>
     request<T>({ method: 'POST', url, data: form, headers: { 'Content-Type': 'multipart/form-data' } }),
 }

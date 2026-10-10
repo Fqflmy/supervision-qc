@@ -11,11 +11,21 @@ export interface User {
   id: number
   username: string
   full_name?: string | null
+  /** 人员身份（账号与身份分离：username 是登录凭据，这些字段标识「这个人是谁」） */
+  employee_no?: string | null
+  org_name?: string | null
+  department?: string | null
+  position?: string | null
+  cert_no?: string | null
+  /** 报告中的签认署名；留空时展示回退到 full_name */
+  signature?: string | null
   email?: string | null
   role: 'admin' | 'kb_manager' | 'engineer' | 'expert' | 'viewer' | string
   specialties: string[]
   project_ids: number[]
   is_active: boolean
+  /** 管理员重置过密码，应尽快自行修改（系统暂无自助改密页，仅作提示） */
+  must_change_password?: boolean
 }
 
 export interface LoginResult {
@@ -551,6 +561,14 @@ export interface ManagedUser {
   id: number
   username: string
   full_name?: string | null
+  /** 人员身份（账号与身份分离：username 是登录凭据，这些字段标识「这个人是谁」） */
+  employee_no?: string | null
+  org_name?: string | null
+  department?: string | null
+  position?: string | null
+  cert_no?: string | null
+  /** 报告中的签认署名；留空时展示回退到 full_name */
+  signature?: string | null
   email?: string | null
   phone?: string | null
   role: AssignableRole | string
@@ -558,6 +576,8 @@ export interface ManagedUser {
   project_ids: number[]
   specialties: string[]
   is_active: boolean
+  /** 是否被要求下次登录后修改密码（管理员重置密码后置为 true） */
+  must_change_password?: boolean
   last_login_at?: string | null
   created_at?: string | null
 }
@@ -574,6 +594,14 @@ export interface UserCreatePayload {
   username: string
   password: string
   full_name?: string | null
+  /** 人员身份（账号与身份分离：username 是登录凭据，这些字段标识「这个人是谁」） */
+  employee_no?: string | null
+  org_name?: string | null
+  department?: string | null
+  position?: string | null
+  cert_no?: string | null
+  /** 报告中的签认署名；留空时展示回退到 full_name */
+  signature?: string | null
   email?: string | null
   phone?: string | null
   role: AssignableRole
@@ -607,6 +635,46 @@ export const usersApi = {
   listUsers: (params: { page?: number; page_size?: number; keyword?: string }) =>
     api.get<PageData<ManagedUser>>('/admin/users', params),
   createUser: (payload: UserCreatePayload) => api.post<ManagedUser>('/admin/users', payload),
+  /** 单个用户详情（编辑表单回填） */
+  getUser: (userId: number) => api.get<ManagedUser>(`/admin/users/${userId}`),
+  /** 更新用户资料与角色（只传需要改的字段；角色变更立即生效） */
+  updateUser: (
+    userId: number,
+    payload: {
+      // 身份字段：null 表示清空（后端只更新非 None 的字段）
+      full_name?: string | null
+      employee_no?: string | null
+      org_name?: string | null
+      department?: string | null
+      position?: string | null
+      cert_no?: string | null
+      signature?: string | null
+      email?: string | null
+      phone?: string | null
+      role?: string
+      specialties?: string[]
+      project_ids?: number[]
+    },
+  ) => api.patch<ManagedUser>(`/admin/users/${userId}`, payload),
+  /**
+   * 管理员重置某用户密码。
+   * ⚠️ 本系统**无自助找回密码**，这是用户忘记密码后唯一的恢复途径。
+   */
+  resetPassword: (userId: number, payload: { new_password: string; must_change?: boolean }) =>
+    api.post<{ user_id: number; username: string; must_change_password: boolean }>(
+      `/admin/users/${userId}/password`,
+      payload,
+    ),
+  /**
+   * 删除用户。
+   * 默认**软删除（停用）**：保留历史评估记录与审计链。
+   * `hard=true` 仅在无关联业务数据时允许 —— 有数据会返回 409 并说明原因。
+   */
+  deleteUser: (userId: number, hard = false) =>
+    api.delete<{ user_id: number; username: string; mode: string; message: string }>(
+      `/admin/users/${userId}`,
+      { hard },
+    ),
   updateProjects: (userId: number, projectIds: number[]) =>
     api.post<ManagedUser>(`/admin/users/${userId}/projects`, { project_ids: projectIds }),
   updateStatus: (userId: number, isActive: boolean) =>

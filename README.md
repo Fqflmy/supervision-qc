@@ -285,6 +285,7 @@ npm run dev
 | `& $py scripts\verify_graph_labels.py` | **图谱标签隔离与一致性**（实体不占用保留标签；Spec 数=库中规范数） | 通过（7 项） |
 | `& $py scripts\build_reachability_matrix.py` | **角色可达性矩阵**（逐角色实测菜单可见性与页面可达性，无空壳页） | 通过（5 角色 × 9 页面） |
 | `& $py scripts\audit_enterprise_ui.py` | **企业化界面**（面包屑导航 + 只读报告详情不泄漏运维字段） | 通过 |
+| `& $py scripts\audit_user_crud_ui.py` | **管理员用户管理界面**（增删改查 + 人员身份绑定 + 重置密码全流程） | 通过（29 项） |
 | `& $py scripts\check_schema.py` | **结构自查**（判定全新库 / 存量库未纳管 / 已纳管） | 通过 |
 | `& $py scripts\shot_roles.py` | **逐角色界面截图**（核验菜单集合与落地页） | 通过（4 角色） |
 | `& $py -m pytest tests\test_metrics_endpoint.py` | **指标端点与抓取鉴权**（Prometheus 文本格式） | 通过（20 项） |
