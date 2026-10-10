@@ -204,7 +204,16 @@ const downloadingId = ref<string | null>(null)
 async function downloadPdf(row: { id: string; review_status?: string }) {
   downloadingId.value = row.id
   try {
-    const { blob, filename } = await evalApi.downloadReportPdf(row.id)
+    const { blob, filename, handled } = await evalApi.downloadReportPdf(row.id)
+
+    // ⚠️ handled=true 表示下载管理器扩展（IDM/迅雷等）已在**网络层**拦截并自行下载，
+    // 页面里的 fetch 只拿到被取消的空响应（204 / 0 字节）。
+    // 此时若继续 saveBlob(空 blob)，磁盘上会留下一个 0 字节的损坏文件。
+    if (handled) {
+      ElMessage.success('报告已开始下载（由浏览器或下载管理器接管）')
+      return
+    }
+
     saveBlob(blob, filename.endsWith('.pdf') ? filename : `${filename}.pdf`)
     // 未签发的报告下载的是参考件，必须提示，避免被误当正式文件流转
     if (row.review_status && row.review_status !== 'signed') {

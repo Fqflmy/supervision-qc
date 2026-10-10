@@ -317,6 +317,10 @@ npm run dev
 | `& $py scripts\audit_enterprise_ui.py` | **企业化界面**（面包屑导航 + 只读报告详情不泄漏运维字段） | 通过 |
 | `& $py scripts\audit_user_crud_ui.py` | **管理员用户管理界面**（增删改查 + 人员身份绑定 + 重置密码全流程） | 通过（29 项） |
 | `& $py scripts\audit_verdict_wording.py` | **复核术语消歧**（动作词 + 对象说明；无「复核结论/判定合格」等歧义表述） | 通过（16 项） |
+| `& $py scripts\audit_profile_ui.py` | **个人中心**（身份展示、字段只读、强制改密拦截不死锁、自助改密） | 通过（23 项） |
+| `& $py scripts\audit_pdf_download_ui.py` | **报告 PDF 下载**（按钮可用；正确处理「真实字节」与「被下载管理器接管」两种结局） | 通过（8 项） |
+| `& docker exec supervision-api python scripts\verify_pdf_export.py` | **PDF 导出接口**（内容/中文/签发状态/权限隔离/审计留痕） | 通过（15 项） |
+| `& $py scripts\check_script_encoding.py` | **启动脚本编码契约**（.ps1/.bat 的 BOM 与 CRLF；.sh 不得有 BOM） | 通过（7 文件） |
 | `& $py scripts\check_schema.py` | **结构自查**（判定全新库 / 存量库未纳管 / 已纳管） | 通过 |
 | `& $py scripts\shot_roles.py` | **逐角色界面截图**（核验菜单集合与落地页） | 通过（4 角色） |
 | `& $py -m pytest tests\test_metrics_endpoint.py` | **指标端点与抓取鉴权**（Prometheus 文本格式） | 通过（20 项） |

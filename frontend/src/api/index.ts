@@ -440,7 +440,13 @@ export const evalApi = {
    * 下载评估报告 PDF（正式可交付形态）。
    *
    * 走 api.download 而不是 api.get —— 二进制响应不是 `{code,message,data}` 信封，
-   * 用 request() 会解析失败。后端在 Content-Disposition 里给出含中文的文件名。
+   * 用 request() 会解析失败。
+   *
+   * ⚠️ 返回的 `handled === true` **不是失败**：浏览器装了下载管理器扩展
+   * （IDM/迅雷等）时，扩展在**网络层**拦截并自行完成下载，页面 fetch 只拿到
+   * 被取消的空响应（204 / 0 字节）。此时调用方**不要再保存 blob**，
+   * 否则会留下 0 字节的损坏文件。详见 `api/http.ts` 的 `download()`。
+   *
    * 导出行为会在后端留下审计记录（AuditAction.REPORT_EXPORT）。
    */
   downloadReportPdf: (id: string) => download(`/eval/tasks/${id}/report/pdf`),

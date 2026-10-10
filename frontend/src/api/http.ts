@@ -117,19 +117,36 @@ export async function request<T>(config: AxiosRequestConfig): Promise<T> {
 /**
  * 下载二进制文件（PDF / Excel 等）。
  *
- * 为什么不能用 ``request()``：该包装器假定响应体是
- * ``{ code, message, data }`` 信封并会去读 ``body.code`` —— 对二进制
- * 响应会得到一堆乱码且 ``code`` 为 undefined，判定失败。
- * 因此下载必须走**原始 axios 实例**（仍复用其 token 注入与 401 拦截）。
+ * ⚠️ 必须理解「**204 / 0 字节并不等于失败**」
+ * ------------------------------------------
+ * 这是本项目最容易被误判为 bug 的地方，改动前务必读完：
  *
- * 返回 blob 与后端在 ``Content-Disposition`` 中声明的文件名。
- * 解析文件名时优先取 RFC 5987 的 ``filename*``（UTF-8 编码），
- * 因为中文文件名在 ``filename=`` 里会被浏览器截断或乱码。
+ * 浏览器安装下载管理器扩展（IDM / 迅雷 / FDM 等）时，扩展在**网络层**拦截
+ * 带 ``Content-Disposition: attachment`` 的响应并**自己完成下载**。此时页面里的
+ * ``fetch`` / ``XHR`` 会拿到一个**被取消的空响应**：
+ *
+ *   - ``status === 204``
+ *   - ``blob.size === 0``
+ *   - 读不到 ``Content-Disposition``（因此文件名解析不出来）
+ *   - 浏览器网络事件里**看不到这个请求**（扩展在网络层就截走了）
+ *
+ * 但**文件其实已经下好了**（实测：IDM 下载完成对话框显示 19.54 KB、
+ * 中文文件名正确）。若把 204 当失败处理，用户会看到「下载失败」的提示；
+ * 若继续 ``saveBlob(空 blob)``，则会在磁盘上留下一个 **0 字节的空文件**，
+ * 用户打开发现损坏 —— 这才是真正的问题。
+ *
+ * 因此返回值里带上 ``handled`` 标记，由调用方决定要不要再保存：
+ * - ``handled === true``：下载已被扩展/浏览器接管并完成，**不要再保存**；
+ * - ``handled === false``：拿到真实字节，由调用方保存。
+ *
+ * 另一个已知限制：``<a href>`` 直链导航无法携带 ``Authorization`` 头，
+ * 因此本站用 Token 鉴权时不能简单用直链；直链方案需要一次性下载票据
+ * （见 ``/eval/tasks/{id}/report/download-ticket``）。
  */
 export async function download(
   url: string,
   params?: Record<string, unknown>,
-): Promise<{ blob: Blob; filename: string }> {
+): Promise<{ blob: Blob; filename: string; handled: boolean }> {
   const response = await http.request<Blob>({
     method: 'GET',
     url,
@@ -156,7 +173,16 @@ export async function download(
     if (plain?.[1]) filename = plain[1]
   }
 
-  return { blob: response.data, filename: filename || 'download' }
+  if (!filename.endsWith('.pdf') && url.includes('/report/pdf')) {
+    // 被扩展接管时读不到 Content-Disposition，这里给一个可用的回退名，
+    // 避免调用方拿到 'download' 这种无意义的名字。
+    if (!filename || filename === 'download') filename = '质量评估报告.pdf'
+  }
+
+  const size = response.data?.size ?? 0
+  const handled = response.status === 204 || size === 0
+
+  return { blob: response.data, filename: filename || 'download', handled }
 }
 
 /** 触发浏览器保存一个 Blob（下载的最后一步，各页面共用）。 */
