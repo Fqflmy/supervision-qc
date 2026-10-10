@@ -537,17 +537,20 @@ a {
   font-family: var(--font-mono);
 }
 
-/* ---------- 登录页 ---------- */
+/* ---------- 登录页（企业化） ---------- */
 .login-page {
   height: 100vh;
   display: grid;
-  grid-template-columns: 1.05fr 0.95fr;
+  grid-template-columns: 1.08fr 0.92fr;
 }
 
 .login-hero {
-  background: linear-gradient(150deg, #0f172a 0%, #1b2a4a 55%, #24406b 100%);
-  color: #e2e8f0;
-  padding: 56px 60px;
+  /* 深色沉稳的政务/企业风：低饱和藏蓝，避免鲜艳渐变带来的「科技演示感」 */
+  background:
+    radial-gradient(1200px 600px at 78% 18%, rgba(37, 99, 235, 0.16), transparent 62%),
+    linear-gradient(155deg, #0b1220 0%, #111d33 52%, #16263f 100%);
+  color: #e6edf7;
+  padding: 48px 68px;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -555,79 +558,217 @@ a {
   overflow: hidden;
 }
 
-.login-hero::after {
+/* 细网格底纹：比大色块圆点更「工程/工业」，且不抢视线 */
+.login-hero::before {
   content: '';
   position: absolute;
-  right: -120px;
-  bottom: -140px;
-  width: 420px;
-  height: 420px;
-  border-radius: 50%;
-  background: rgba(29, 78, 216, 0.18);
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(148, 178, 220, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 178, 220, 0.07) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(900px 700px at 26% 34%, #000 0%, transparent 80%);
+  -webkit-mask-image: radial-gradient(900px 700px at 26% 34%, #000 0%, transparent 80%);
+  pointer-events: none;
 }
 
-.login-hero__title {
-  font-size: 30px;
-  font-weight: 700;
-  line-height: 1.4;
-  letter-spacing: 0.5px;
+.login-hero__inner {
+  position: relative;
   z-index: 1;
+  max-width: 560px;
+}
+
+/* 机构标识区 */
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 18px;
+  margin-bottom: 26px;
+  border-bottom: 1px solid rgba(148, 178, 220, 0.16);
+}
+
+.login-brand__mark {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: #dbe7f7;
+  background: linear-gradient(145deg, #1d3a63, #2a5290);
+  border: 1px solid rgba(120, 160, 220, 0.32);
+}
+
+.login-brand__org {
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  color: #dbe7f7;
+}
+
+.login-brand__system {
+  font-size: 12px;
+  letter-spacing: 0.4px;
+  color: #8ea6c4;
+  margin-top: 2px;
+}
+
+.login-hero__headline {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.42;
+  letter-spacing: 1.5px;
 }
 
 .login-hero__desc {
-  margin-top: 16px;
+  margin-top: 18px;
   font-size: 13.5px;
-  line-height: 2;
-  color: #9fb0c9;
-  max-width: 460px;
-  z-index: 1;
+  line-height: 2.05;
+  color: #a3b6cf;
+  max-width: 520px;
 }
 
-.login-hero__list {
-  margin-top: 26px;
+/* 价值主张列表 */
+.login-hero__values {
+  margin-top: 30px;
   display: grid;
-  gap: 9px;
-  z-index: 1;
+  gap: 15px;
 }
 
-.login-hero__item {
-  font-size: 13px;
-  color: #c3d0e2;
+.value-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.value-item__icon {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  border-radius: 5px;
   display: flex;
   align-items: center;
-  gap: 9px;
+  justify-content: center;
+  color: #7fb0f0;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(96, 140, 200, 0.26);
+  font-size: 15px;
 }
 
-.login-hero__dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #3b82f6;
+.value-item__title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #dbe7f7;
+  line-height: 1.5;
 }
 
+.value-item__desc {
+  margin-top: 3px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #8ea6c4;
+}
+
+/* 底部可信度标签 */
+.login-hero__meta {
+  margin-top: 32px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(148, 178, 220, 0.16);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.meta-chip {
+  font-size: 11.5px;
+  letter-spacing: 0.3px;
+  color: #9fb4ce;
+  padding: 4px 10px;
+  border-radius: 3px;
+  background: rgba(148, 178, 220, 0.08);
+  border: 1px solid rgba(148, 178, 220, 0.18);
+}
+
+/* ---------- 右侧认证区 ---------- */
 .login-form-wrap {
   display: flex;
   align-items: center;
   justify-content: center;
   background: var(--surface);
   padding: 40px;
+  overflow-y: auto;
 }
 
-.login-form {
+.login-panel {
   width: 100%;
-  max-width: 340px;
+  max-width: 388px;
 }
 
-.login-form__title {
-  font-size: 20px;
+.login-panel__head {
+  margin-bottom: 24px;
+}
+
+.login-panel__title {
+  font-size: 22px;
   font-weight: 700;
-  margin-bottom: 6px;
+  letter-spacing: 0.5px;
+  margin: 0;
+  color: var(--ink-900);
 }
 
-.login-form__sub {
-  font-size: 12.5px;
+.login-panel__sub {
+  margin: 7px 0 0;
+  font-size: 13px;
   color: var(--ink-500);
-  margin-bottom: 26px;
+}
+
+/* 安全责任提示：企业系统应明确告知，而不是只放一句「欢迎使用」 */
+.login-panel__notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 20px;
+  padding: 11px 13px;
+  border-radius: 5px;
+  font-size: 12px;
+  line-height: 1.75;
+  color: #8a6100;
+  background: #fffaf0;
+  border: 1px solid #f6e2b8;
+}
+
+.login-panel__notice strong {
+  color: #6b4a00;
+}
+
+.login-panel__footer {
+  margin-top: 26px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  font-size: 11.5px;
+  color: var(--ink-300);
+  text-align: center;
+  line-height: 1.9;
+}
+
+.login-panel__footer .sep {
+  margin: 0 8px;
+  color: var(--line);
+}
+
+.login-panel__footer .icp {
+  color: var(--ink-300);
+  text-decoration: none;
+}
+
+.login-panel__footer .icp:hover {
+  color: var(--el-color-primary);
+  text-decoration: underline;
 }
 
 @media (max-width: 900px) {
