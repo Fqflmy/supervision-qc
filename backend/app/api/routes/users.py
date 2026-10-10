@@ -31,7 +31,7 @@ from app.core.authz import ADMIN_ROLES, project_ids_of
 from app.core.errors import ConflictError, NotFoundError, ParamInvalidError
 from app.core.logging_conf import get_logger
 from app.core.response import ok, paginate
-from app.core.security import hash_password
+from app.core.security import hash_password, validate_password_strength
 from app.db import add_audit_log
 from app.db.models import Project, User
 
@@ -464,6 +464,11 @@ def reset_user_password(
     target = session.get(User, user_id)
     if target is None:
         raise NotFoundError(f"用户不存在：{user_id}")
+
+    # 强度校验：与建号、用户自助改密使用**同一份规则**（validate_password_strength）。
+    # 此前这里漏了 —— 管理员重置可以设成「12345678」，
+    # 等于从重置入口绕过了全局密码策略。
+    validate_password_strength(body.new_password)
 
     target.password_hash = hash_password(body.new_password)
     target.must_change_password = bool(body.must_change)

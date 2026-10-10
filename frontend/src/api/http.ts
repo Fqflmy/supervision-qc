@@ -114,6 +114,64 @@ export async function request<T>(config: AxiosRequestConfig): Promise<T> {
   return body.data
 }
 
+/**
+ * 下载二进制文件（PDF / Excel 等）。
+ *
+ * 为什么不能用 ``request()``：该包装器假定响应体是
+ * ``{ code, message, data }`` 信封并会去读 ``body.code`` —— 对二进制
+ * 响应会得到一堆乱码且 ``code`` 为 undefined，判定失败。
+ * 因此下载必须走**原始 axios 实例**（仍复用其 token 注入与 401 拦截）。
+ *
+ * 返回 blob 与后端在 ``Content-Disposition`` 中声明的文件名。
+ * 解析文件名时优先取 RFC 5987 的 ``filename*``（UTF-8 编码），
+ * 因为中文文件名在 ``filename=`` 里会被浏览器截断或乱码。
+ */
+export async function download(
+  url: string,
+  params?: Record<string, unknown>,
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await http.request<Blob>({
+    method: 'GET',
+    url,
+    params,
+    responseType: 'blob',
+  })
+
+  const disposition =
+    (response.headers['content-disposition'] as string | undefined) ??
+    (response.headers['Content-Disposition'] as string | undefined) ??
+    ''
+
+  let filename = ''
+  // 优先 filename*=UTF-8''xxx（RFC 5987）
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(disposition)
+  if (star?.[1]) {
+    try {
+      filename = decodeURIComponent(star[1])
+    } catch {
+      filename = star[1]
+    }
+  } else {
+    const plain = /filename="?([^";]+)"?/i.exec(disposition)
+    if (plain?.[1]) filename = plain[1]
+  }
+
+  return { blob: response.data, filename: filename || 'download' }
+}
+
+/** 触发浏览器保存一个 Blob（下载的最后一步，各页面共用）。 */
+export function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  // 立即 revoke 在部分浏览器会让下载中断，延后释放
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
+}
+
 export const api = {
   get: <T>(url: string, params?: Record<string, unknown>) => request<T>({ method: 'GET', url, params }),
   post: <T>(url: string, data?: unknown, params?: Record<string, unknown>) =>
@@ -124,6 +182,11 @@ export const api = {
     request<T>({ method: 'DELETE', url, params }),
   upload: <T>(url: string, form: FormData) =>
     request<T>({ method: 'POST', url, data: form, headers: { 'Content-Type': 'multipart/form-data' } }),
+  /**
+   * 下载二进制文件（PDF 等）。
+   * 必须走 download 而不是 get —— 二进制响应不是统一信封，request 会解析失败。
+   */
+  download: (url: string, params?: Record<string, unknown>) => download(url, params),
 }
 
 export default http

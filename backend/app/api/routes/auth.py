@@ -11,7 +11,8 @@ from sqlalchemy import select
 from app.api.deps import CurrentUser, DbSession, TraceId, client_ip, require_permission
 from app.config import settings
 from app.constants import AuditAction
-from app.core.errors import ForbiddenError, UnauthenticatedError
+from app.core.authz import ADMIN_ROLES
+from app.core.errors import ForbiddenError, ParamInvalidError, UnauthenticatedError
 from app.core.response import ok
 from app.core.security import (
     create_access_token,
@@ -21,9 +22,20 @@ from app.core.security import (
     validate_password_strength,
     verify_password,
 )
+from app.core.logging_conf import get_logger
 from app.db import add_audit_log, utcnow
-from app.db.models import User
-from app.schemas.api import LoginRequest, RefreshRequest, TokenResponse, UserCreate, UserOut, UserUpdate
+from app.db.models import Project, User
+from app.schemas.api import (
+    LoginRequest,
+    PasswordChangeRequest,
+    RefreshRequest,
+    TokenResponse,
+    UserCreate,
+    UserOut,
+    UserUpdate,
+)
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["认证"])
 
@@ -182,6 +194,119 @@ def logout(request: Request, session: DbSession, user: CurrentUser) -> dict:
 @router.get("/me", summary="当前用户信息")
 def me(user: CurrentUser) -> dict:
     return ok(UserOut.model_validate(user).model_dump())
+
+
+@router.get("/profile", summary="个人中心：身份信息 + 访问范围")
+def get_profile(session: DbSession, user: CurrentUser) -> dict:
+    """个人中心数据（**任何已登录用户可访问自己的**）。
+
+    与 ``/admin/users/{id}`` 的区别：后者是管理员视角，可看他人；
+    本接口只能看**自己**，且不含管理字段（角色/项目授权由管理员维护）。
+
+    为什么需要它：用户应能确认「系统里登记的我是谁」——
+    报告签认会用到姓名/单位/岗位，信息错了要能发现并联系管理员更正。
+    """
+    from app.core.authz import project_ids_of
+
+    projects = []
+    ids = sorted(project_ids_of(user))
+    if ids:
+        rows = session.execute(
+            select(Project).where(Project.id.in_(ids)).order_by(Project.id)
+        ).scalars().all()
+        projects = [{"id": p.id, "code": p.code, "name": p.name} for p in rows]
+
+    return ok(
+        {
+            "user": UserOut.model_validate(user).model_dump(),
+            "projects": projects,
+            # 管理员不受项目隔离限制，前端据此显示「不受限」而非「未授权」
+            "is_admin": str(user.role).lower() in ADMIN_ROLES,
+        }
+    )
+
+
+@router.post("/password", summary="个人中心：自助修改密码")
+def change_password(
+    request: Request,
+    session: DbSession,
+    user: CurrentUser,
+    trace_id: TraceId,
+    body: PasswordChangeRequest = Body(...),
+) -> dict:
+    """用户自助修改密码（需验证当前密码）。
+
+    为什么必须有它：**在此之前系统没有自助改密能力**，
+    用户忘记或想更换密码只能找管理员重置 —— 这既增加了管理员负担，
+    也让「要求下次登录后修改密码」这个标记形同虚设（用户无处可改）。
+
+    ⚠️ 安全要点
+    -----------
+    1. **必须验证当前密码**：否则 token 泄漏即等于账号被永久接管
+       （攻击者可静默改密把真实用户锁在外面）；
+    2. 新密码不得与旧密码相同：否则「改密」毫无意义，
+       也让强制改密流程可以被一步绕过；
+    3. 审计日志**只记录「已修改」这一事实，绝不记录密码内容**；
+    4. 改密成功后**重新签发 access token**（清除 must_change_password 标记），
+       否则前端仍带着标记，会陷入「改完还被拦」的死循环。
+    """
+    if not verify_password(body.old_password, user.password_hash):
+        add_audit_log(
+            session,
+            AuditAction.CONFIG_CHANGE.value,
+            user_id=user.id,
+            username=user.username,
+            result="failed",
+            ip=client_ip(request),
+            object_type="sys_user",
+            object_id=str(user.id),
+            detail={"action": "change_password", "reason": "old_password_mismatch"},
+        )
+        session.commit()
+        # 不透露「旧密码错误」以外的信息（避免账号枚举），但这里用户已认证，可以直接说
+        raise ParamInvalidError("当前密码不正确")
+
+    if body.new_password == body.old_password:
+        raise ParamInvalidError("新密码不能与当前密码相同")
+
+    # 强度校验与建号/管理员重置使用**同一份规则**（PROFILE 改动前这里漏了，
+    # 会出现「建号时拦、改密时放行」的不一致 —— 用户可先弱密码改密再绕过策略）。
+    validate_password_strength(body.new_password)
+
+    user.password_hash = hash_password(body.new_password)
+    # 改密完成即清除强制改密标记
+    user.must_change_password = False
+    session.flush()
+
+    add_audit_log(
+        session,
+        AuditAction.CONFIG_CHANGE.value,
+        user_id=user.id,
+        username=user.username,
+        ip=client_ip(request),
+        object_type="sys_user",
+        object_id=str(user.id),
+        # 只记录事实，不记录密码
+        detail={"action": "change_password", "self_service": True},
+    )
+    session.commit()
+
+    # 重新签发 token：让前端立刻拿到 must_change_password=False，
+    # 否则用户改完密码仍被守卫拦在个人中心。
+    access = create_access_token(
+        user.id, roles=[user.role], extra={"username": user.username, "trace_id": trace_id}
+    )
+    refresh = create_refresh_token(user.id)
+    logger.info("用户自助修改密码成功", extra={"user": user.username})
+    return ok(
+        {
+            "access_token": access,
+            "refresh_token": refresh,
+            "token_type": "bearer",
+            "expires_in": settings.access_token_expire_minutes * 60,
+            "user": UserOut.model_validate(user).model_dump(),
+        }
+    )
 
 
 @router.get("/users", summary="用户列表（管理员）")

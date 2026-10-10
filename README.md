@@ -164,7 +164,37 @@ docker compose up -d                 # 一条命令启动全部服务（含自�
 
 访问：管理后台 `http://127.0.0.1:5173`，接口文档 `http://127.0.0.1:8000/api/v1/docs`。
 
-### 3.2 方案 B：全容器一键启动（推荐用于交付）
+### 3.2 Windows 脚本的编码约束（改动启动脚本前必读）
+
+这两个约束**不遵守脚本就直接不可用**，而在 UTF-8 的编辑器里看不出任何异常：
+
+| 约束 | 原因 |
+| --- | --- |
+| .ps1 / .bat 含中文时**必须有 UTF-8 BOM** | PowerShell 5.1 读 .ps1 时**没有 BOM 就按系统 ANSI（GBK）解码**。中文被误解后可能产出 '（0x27）而**提前终结字符串**，报 The string is missing the terminator，且报错位置在**毫不相关的行**，极难定位 |
+| .bat / .cmd **必须 CRLF** 换行 | cmd **不识别 LF**，会把整个文件当成一行执行 —— 
+em 注释后的内容会被当作命令去跑，报 'xxx' is not recognized as an internal or external command |
+| .sh **不能有 BOM** | bash 会把 BOM 当成命令的一部分而报错 |
+
+真实症状（本项目一度如此）：文件里写的是
+
+`powershell
+Write-Host '  停止服务   .\start.ps1 -Down' -ForegroundColor Gray
+`
+
+按 UTF-8 完全正确，但按 GBK 解成 Write-Host '  鍋滄㈡湇鍔�   ... ——
+中间凭空多出一个 '，字符串在此结束，**从这一行往后整个脚本语法崩坏**。
+
+**CI 已守住这条契约**（ackend/scripts/check_script_encoding.py）：
+
+`ash
+python backend/scripts/check_script_encoding.py   # 提交前自查
+`
+
+> .gitattributes 已声明 *.ps1 / *.bat 为 eol=crlf。
+> 但 **BOM 不在 .gitattributes 的管理范围**，只能靠脚本检查 +
+> 使用会保留 BOM 的编辑器（VS Code 的 UTF-8 with BOM、PowerShell ISE）。
+
+### 3.3 方案 B：全容器一键启动（推荐用于交付）
 
 仓库根目录已放好 `docker-compose.yml`，**无需 `-f` 参数**：
 
@@ -203,7 +233,7 @@ docker compose down -v                   # 停止并删除数据卷（彻底重�
 
 配置文件为 `deploy/.env`（可从 `deploy/.env.example` 复制）。
 
-### 3.3 手动启动（逐步控制，便于排查）
+### 3.4 手动启动（逐步控制，便于排查）
 
 环境：`D:\Miniconda3\envs\test001`（Python 3.12.13）。
 

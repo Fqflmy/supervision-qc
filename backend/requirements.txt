@@ -37,6 +37,12 @@ rank-bm25>=0.2.2
 jieba>=0.42.1
 tiktoken>=0.7
 
+# --- 报告导出 ---
+# PDF 生成用 reportlab：其内置 Adobe CJK CID 字体（STSong-Light）
+# 无需字体文件、无需 apt 系统库，适配 python:3.12-slim 精简镜像。
+# （WeasyPrint 需 libpango/libcairo + 字体，与镜像「不装系统包」的前提冲突）
+reportlab>=4.2
+
 # --- 文档解析 ---
 pdfplumber>=0.11
 pypdf>=4.2

@@ -2,10 +2,13 @@
 """评估任务接口（FR-AGT，SRS 6.2 API-12~16）。"""
 from __future__ import annotations
 
+import io
+from urllib.parse import quote
+
 import uuid
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Body, Query, Request
+from fastapi import Response, APIRouter, BackgroundTasks, Body, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
@@ -41,6 +44,7 @@ from app.db.models import (
     JudgeReview,
     JudgeScore,
     MatchResult,
+    Project,
     User,
 )
 from app.schemas.api import (
@@ -467,6 +471,121 @@ def get_task(task_id: uuid.UUID, session: DbSession, user: CurrentUser) -> dict:
         }
     )
     return ok(payload)
+
+
+@router.get("/tasks/{task_id}/report/pdf", summary="下载评估报告 PDF")
+def download_report_pdf(
+    request: Request,
+    task_id: uuid.UUID,
+    session: DbSession,
+    user: CurrentUser,
+) -> Response:
+    """把评估报告导出为 PDF（正式可交付形态）。
+
+    为什么需要
+    ----------
+    报告的价值在于**对外出具**：报送建设单位、归档、作为质量责任凭据。
+    仅存在于系统界面里的报告无法完成这些用途，因此必须有可下载的正式文件。
+
+    ⚠️ 三个必须做对的点
+    ------------------
+    1. **归属校验**：与 ``GET /report`` 用同一套 ``assert_report_access``，
+       否则知道 task_id 就能下载他人项目的报告（比读到 JSON 更严重 ——
+       文件会被转发出去）；
+    2. **签发状态印在文件上**：PDF 一旦导出就脱离系统权限控制，
+       文件本身必须写明「未签发不得作为正式依据」，否则接收方无从判断；
+    3. **导出留痕**：记录谁在何时导出了哪份报告 —— 报告涉及工程质量责任，
+       追溯导出行为是合规要求（``AuditAction.REPORT_EXPORT``）。
+    """
+    from app.constants import REVIEW_STATUS_LABELS, review_decision_label
+    from app.services.pdf import ascii_filename, build_report_pdf, safe_filename
+
+    report = session.execute(
+        select(EvalReport).where(EvalReport.task_id == task_id)
+    ).scalars().first()
+    if report is None:
+        raise NotFoundError("该任务还没有生成报告，请先执行评估")
+    assert_report_access(user, session, report)
+
+    task = session.get(EvalTask, task_id)
+    project = session.get(Project, task.project_id) if task and task.project_id else None
+
+    # 复核人：优先署名，回退姓名，最后账号
+    reviewer_name = None
+    if report.reviewed_by:
+        reviewer = session.get(User, report.reviewed_by)
+        if reviewer is not None:
+            reviewer_name = (
+                getattr(reviewer, "signature", None)
+                or reviewer.full_name
+                or reviewer.username
+            )
+
+    status = review_status_of(report.human_verdict, report.is_final)
+    meta = {
+        "report_no": str(report.id)[:8].upper(),
+        "specialty": task.specialty if task else None,
+        "project": project.name if project else None,
+        "verdict": overall_verdict_label(report.overall_verdict),
+        "risk": {"high": "高", "medium": "中", "low": "低"}.get(
+            report.risk_level or "", report.risk_level
+        ),
+        "review_decision": review_decision_label(report.human_verdict),
+        "review_status": REVIEW_STATUS_LABELS[status],
+        "reviewed_by": reviewer_name,
+        "finished_at": task.finished_at.strftime("%Y-%m-%d %H:%M")
+        if task and task.finished_at
+        else None,
+        "is_final": bool(report.is_final),
+        "footer_left": task.title if task else None,
+    }
+
+    buffer = io.BytesIO()
+    build_report_pdf(
+        title=(task.title if task else None) or "质量评估报告",
+        markdown=report.markdown or "",
+        meta=meta,
+        output=buffer,
+    )
+    buffer.seek(0)
+
+    add_audit_log(
+        session,
+        AuditAction.REPORT_EXPORT.value,
+        user_id=user.id,
+        username=user.username,
+        ip=client_ip(request),
+        object_type="eval_report",
+        object_id=str(report.id),
+        detail={
+            "task_id": str(task_id),
+            "format": "pdf",
+            # 记录导出时的签发状态：便于日后追溯「当时导出的是未签发版本」
+            "is_final": bool(report.is_final),
+            "bytes": buffer.getbuffer().nbytes,
+        },
+    )
+    session.commit()
+
+    filename = safe_filename((task.title if task else None) or "质量评估报告")
+    # ⚠️ HTTP 头只能 latin-1 编码，中文不能直接放进 filename="..."。
+    # RFC 6266/5987 要求两个都给：ASCII 回退 + filename*=UTF-8''真名。
+    # 只给中文 filename= 会让 Starlette 抛 UnicodeEncodeError → 接口 500。
+    ascii_name = ascii_filename((task.title if task else None) or "", fallback="report")
+    disposition = (
+        f'attachment; filename="{ascii_name}.pdf"; '
+        f"filename*=UTF-8''{quote(filename)}.pdf"
+    )
+    logger.info("导出报告 PDF", extra={"task_id": str(task_id), "user": user.username})
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": disposition,
+            # 便于前端读取实际文件名（跨域下 Content-Disposition 不可读）
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )
 
 
 @router.get("/tasks/{task_id}/report", summary="获取评估报告（API-16）")

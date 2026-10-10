@@ -16,6 +16,18 @@
         <div style="display: flex; gap: 8px; align-items: center">
           <el-button size="small" @click="router.back()">返回</el-button>
           <el-button size="small" :loading="loading" @click="load">刷新</el-button>
+          <!-- 下载 PDF：报告的价值在于对外出具（报送、归档、作为责任凭据），
+               仅存在于系统界面里的报告无法完成这些用途。 -->
+          <el-button
+            v-if="report"
+            size="small"
+            type="primary"
+            :icon="Download"
+            :loading="downloading"
+            @click="downloadPdf"
+          >
+            下载 PDF
+          </el-button>
         </div>
       </div>
 
@@ -173,7 +185,7 @@
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { InfoFilled } from '@element-plus/icons-vue'
+import { Download, InfoFilled } from '@element-plus/icons-vue'
 import {
   evalApi,
   reviewApi,
@@ -181,6 +193,7 @@ import {
   type EvalTaskDetail,
   type ReviewStatusInfo,
 } from '@/api'
+import { saveBlob } from '@/api/http'
 import MarkdownView from '@/components/MarkdownView.vue'
 import {
   DUAL_VERDICT_NOTE,
@@ -218,6 +231,7 @@ const report = ref<EvalReport | null>(null)
 const review = ref<ReviewStatusInfo | null>(null)
 const matches = ref<Record<string, unknown>[]>([])
 const loading = ref(false)
+const downloading = ref(false)
 const tab = ref('render')
 
 async function load() {
@@ -250,9 +264,36 @@ async function load() {
   }
 }
 
+/**
+ * 下载报告 PDF。
+ *
+ * ⚠️ 两点容易做错：
+ * 1. 必须走 `evalApi.downloadReportPdf`（二进制），不能用普通 GET ——
+ *    后者会尝试把 PDF 当 JSON 信封解析而失败；
+ * 2. 文件名从后端 `Content-Disposition` 解析（含中文），
+ *    不能在前端用标题拼 —— 后端做了安全字符过滤，前端拼会不一致。
+ */
+async function downloadPdf() {
+  if (!report.value) return
+  downloading.value = true
+  try {
+    const { blob, filename } = await evalApi.downloadReportPdf(taskId)
+    saveBlob(blob, filename.endsWith('.pdf') ? filename : `${filename}.pdf`)
+    // 提示里点明「未签发」的报告下载的是参考件，避免被误当作正式文件流转
+    if (review.value && !review.value.is_final) {
+      ElMessage.warning('已下载。该报告尚未签发，仅供内部参考')
+    } else {
+      ElMessage.success('报告已下载')
+    }
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '下载失败')
+  } finally {
+    downloading.value = false
+  }
+}
+
 onMounted(load)
 </script>
-
 <style scoped>
 .report-meta {
   margin-top: 5px;

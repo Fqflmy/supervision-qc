@@ -387,6 +387,11 @@ class AuditAction(StrEnum):
     CHAT = "chat"
     EVAL_CREATE = "eval_create"
     EVAL_RESUME = "eval_resume"
+    #: 导出报告（PDF 等可交付形态）
+    #:
+    #: 为什么要留痕：报告一旦导出就**脱离了系统权限控制** ——
+    #: 文件可以被转发、打印、长期保存。因此「谁在什么时候导出了哪份报告」
+    #: 是质量责任追溯的必要信息（也便于排查泄漏来源）。
     REPORT_EXPORT = "report_export"
     JUDGE_SCORE = "judge_score"
     CONFIG_CHANGE = "config_change"

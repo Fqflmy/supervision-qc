@@ -88,9 +88,18 @@
             <span class="small muted">{{ row.finished_at ? fmtTime(row.finished_at) : '-' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="90" fixed="right">
+        <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="openDetail(row.id)">查看报告</el-button>
+            <!-- 列表页也能直接下载：查看后往往就是要导出去报送/归档，
+                 多一次跳转是多余的。 -->
+            <el-button
+              link
+              type="primary"
+              size="small"
+              :loading="downloadingId === row.id"
+              @click="downloadPdf(row)"
+            >下载</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -114,6 +123,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { saveBlob } from '@/api/http'
 import { evalApi, systemApi, type EvalTask } from '@/api'
 import { useAuthStore } from '@/stores/auth'
 import {
@@ -178,6 +188,34 @@ async function load() {
     ElMessage.error(err instanceof Error ? err.message : '加载失败')
   } finally {
     loading.value = false
+  }
+}
+
+/** 正在下载的行 id（用于按钮 loading，避免重复点击） */
+const downloadingId = ref<string | null>(null)
+
+/**
+ * 下载报告 PDF。
+ *
+ * ⚠️ 必须走 evalApi.downloadReportPdf（二进制），不能用普通 GET ——
+ * 后者会把 PDF 当 JSON 信封解析而失败。
+ * 文件名由后端 Content-Disposition 决定（含中文，前端拼会与后端过滤规则不一致）。
+ */
+async function downloadPdf(row: { id: string; review_status?: string }) {
+  downloadingId.value = row.id
+  try {
+    const { blob, filename } = await evalApi.downloadReportPdf(row.id)
+    saveBlob(blob, filename.endsWith('.pdf') ? filename : `${filename}.pdf`)
+    // 未签发的报告下载的是参考件，必须提示，避免被误当正式文件流转
+    if (row.review_status && row.review_status !== 'signed') {
+      ElMessage.warning('已下载。该报告尚未签发，仅供内部参考')
+    } else {
+      ElMessage.success('报告已下载')
+    }
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '下载失败')
+  } finally {
+    downloadingId.value = null
   }
 }
 

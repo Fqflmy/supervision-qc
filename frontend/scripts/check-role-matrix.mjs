@@ -67,6 +67,11 @@ const MENUS = [
   { name: 'judge', title: '质量评审', permAny: ['eval:review', 'judge:write'] },
   { name: 'users', title: '用户与授权', perm: 'admin:*' },
   { name: 'system', title: '系统与审计', perm: 'admin:*' },
+  // 个人中心：**无 perm，所有角色可见**。
+  // 它是用户改自己密码、确认身份登记的地方，也是「强制改密」时
+  // 路由守卫唯一放行的目标 —— 因此绝不能加角色限制，
+  // 否则被要求改密的用户会无处可去（死锁）。
+  { name: 'profile', title: '个人中心' },
 ]
 
 function can(grants, permission) {
@@ -105,11 +110,13 @@ const EXPECTED_MENUS = {
     'judge',
     'users',
     'system',
+    'profile',
   ],
-  kb_manager: ['knowledge', 'graph', 'chat', 'reports'],
-  engineer: ['knowledge', 'graph', 'chat', 'evaluation', 'reports'],
-  expert: ['knowledge', 'chat', 'reports', 'judge'],
-  viewer: ['knowledge', 'chat', 'reports'],
+  // 每个角色都含 profile（个人中心对所有角色开放）
+  kb_manager: ['knowledge', 'graph', 'chat', 'reports', 'profile'],
+  engineer: ['knowledge', 'graph', 'chat', 'evaluation', 'reports', 'profile'],
+  expert: ['knowledge', 'chat', 'reports', 'judge', 'profile'],
+  viewer: ['knowledge', 'chat', 'reports', 'profile'],
 }
 
 function sortedEqual(a, b) {

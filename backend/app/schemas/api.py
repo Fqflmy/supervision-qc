@@ -40,6 +40,18 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class PasswordChangeRequest(BaseModel):
+    """个人中心自助修改密码。
+
+    ⚠️ ``old_password`` 必填且**必须服务端校验**：
+    否则 access token 泄漏即等于账号被永久接管 ——
+    攻击者可静默改密，把真实用户锁在系统外。
+    """
+
+    old_password: str = Field(..., min_length=1, max_length=128, description="当前密码")
+    new_password: str = Field(..., min_length=8, max_length=128, description="新密码，至少 8 位")
+
+
 class UserOut(BaseModel):
     id: int
     username: str

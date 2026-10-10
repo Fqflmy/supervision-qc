@@ -72,6 +72,15 @@ jobs:
         working-directory: backend
         run: python -m pytest -q --tb=short
 
+      - name: 启动脚本编码契约（BOM / CRLF）
+        # 为什么必须守：PowerShell 5.1 读 .ps1 时若无 UTF-8 BOM 会按 GBK 解码，
+        # 中文被误解后可能产出 `'` 而提前终结字符串，脚本直接语法崩坏；
+        # cmd 读 .bat 还不识别 LF 换行（会把整个文件当一行执行）。
+        # 这两类问题在 UTF-8 的编辑器与 CI 终端里都**看不出异常**，
+        # 只有实际双击运行才暴露 —— 因此必须在 CI 拦住。
+        working-directory: backend
+        run: python scripts/check_script_encoding.py
+
       - name: 路由与 OpenAPI 契约校验
         working-directory: backend
         run: python scripts/smoke_api.py

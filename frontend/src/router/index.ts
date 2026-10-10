@@ -77,6 +77,15 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '任务详情', hidden: true, perm: 'eval:read' },
       },
       {
+        // 个人中心：**所有已登录角色**都可访问（无 meta.perm），
+        // 因为它是用户管理自己账号（改密）与确认身份登记的地方。
+        // 也是强制改密时的唯一放行目标，因此绝不能加角色权限限制。
+        path: 'profile',
+        name: 'profile',
+        component: () => import('@/views/ProfileView.vue'),
+        meta: { title: '个人中心', hidden: true },
+      },
+      {
         // 评估报告（只读视角）：任何有 eval:read 的角色都能看**授权项目内**的报告。
         // 与 evaluation（发起方工作台，需 eval:write）分开，让只读用户也有入口。
         path: 'reports',
@@ -135,6 +144,23 @@ router.beforeEach(async (to) => {
       await auth.fetchProfile()
     }
     return { name: homeForRole(auth.user?.role) }
+  }
+
+  // ---- 强制修改密码 ----
+  // 管理员重置过密码（must_change_password=True）时，把用户**留在个人中心**直到改密完成。
+  // 登录后的提示横幅做不到这一点：用户可以无视横幅继续操作。
+  //
+  // ⚠️ 两条必须放行的路径，否则用户会被彻底卡住：
+  // 1. `profile` 本身 —— 否则到不了改密界面，形成死锁；
+  // 2. `login` 已在上面的 isPublic 分支处理 —— 用户必须还能退出登录换账号。
+  if (!isPublic) {
+    const auth = useAuthStore()
+    if (!auth.user) {
+      await auth.fetchProfile()
+    }
+    if (auth.user?.must_change_password && to.name !== 'profile') {
+      return { name: 'profile' }
+    }
   }
 
   // 角色级访问控制：按路由声明的权限点（meta.perm / meta.permAny）判定。

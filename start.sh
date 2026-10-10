@@ -139,10 +139,46 @@ fi
 # 3. 构建并启动全部服务
 # --------------------------------------------------------------------------- #
 step '构建并启动全部服务'
-if [[ "$BUILD" == "1" ]]; then
-  docker compose up -d --build
-else
-  docker compose up -d
+
+# 带重试的上线。
+#
+# 为什么必须重试：`docker compose up -d` 在**需要构建镜像**时会把构建一并做掉，
+# 而构建依赖外网拉取基础镜像与 pip 包。构建期网络抖动会让命令以非 0 退出，
+# 但错误往往是瞬时的（实测遇到过 ReadTimeoutError / subprocess-exited-with-error，
+# **隔一次重跑就成功**）。不做重试，用户看到的就是「一键启动失败」。
+MAX_ATTEMPTS=3
+code=1
+for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+  if [[ "$attempt" -gt 1 ]]; then
+    warn "第 $((attempt - 1)) 次启动未成功，$((5 * (attempt - 1)))s 后重试（共 ${MAX_ATTEMPTS} 次）…"
+    sleep $((5 * (attempt - 1)))
+  fi
+  if [[ "$BUILD" == "1" ]]; then
+    log="logs/compose-up.log"
+    [[ "$attempt" -gt 1 ]] && log="logs/compose-up.attempt${attempt}.log"
+    docker compose up -d --build >"$log" 2>&1 && code=0 || code=1
+  else
+    log="logs/compose-up.log"
+    [[ "$attempt" -gt 1 ]] && log="logs/compose-up.attempt${attempt}.log"
+    docker compose up -d >"$log" 2>&1 && code=0 || code=1
+  fi
+  [[ "$code" == "0" ]] && break
+done
+
+if [[ "$code" != "0" ]]; then
+  fail "服务启动失败（已重试 ${MAX_ATTEMPTS} 次），详见 logs/compose-up*.log"
+  last="logs/compose-up.attempt${MAX_ATTEMPTS}.log"
+  [[ -f "$last" ]] || last="logs/compose-up.log"
+  if [[ -f "$last" ]]; then
+    hints="$(grep -E 'ReadTimeoutError|Connection timed out|Temporary failure|Could not resolve|no space left|Cannot connect to the Docker daemon|manifest unknown|pull access denied' "$last" | tail -3 || true)"
+    if [[ -n "$hints" ]]; then
+      printf '  可能的根因：\n'
+      printf '%s\n' "$hints" | sed 's/^/    /'
+      printf '  → 网络类问题可直接重跑本脚本；磁盘/守护进程类问题需先处理环境。\n'
+    fi
+  fi
+  printf '  排查：docker compose logs --tail 50 api\n'
+  exit 1
 fi
 ok '容器已创建'
 
@@ -153,17 +189,22 @@ if [[ "$NO_WAIT" != "1" ]]; then
   step '等待服务就绪'
   api_ready=0; web_ready=0
   deadline=$(( $(date +%s) + 360 ))
+  # ⚠️ 全栈模式**不映射 api 的 8000 端口**（最小暴露面），只有 web 的 8080 对外。
+  # 后端健康检查必须经 nginx 反向代理（location /api/ -> http://api:8000），
+  # 否则会一直连不上、等满超时后误报「后端未就绪」，而服务其实是好的。
+  # （此前本脚本探的是 127.0.0.1:8000 —— 在 Linux 上必然误报。）
+  HEALTH_URL="http://127.0.0.1:${WEB_PORT:-8080}/api/v1/health"
   while [[ $(date +%s) -lt $deadline ]]; do
-    if [[ "$api_ready" == "0" ]] && curl -fsS -m 4 http://127.0.0.1:8000/api/v1/health >/dev/null 2>&1; then
-      api_ready=1; ok '后端 API 就绪 :8000'
+    if [[ "$api_ready" == "0" ]] && curl -fsS -m 4 "$HEALTH_URL" >/dev/null 2>&1; then
+      api_ready=1; ok '后端 API 就绪（经 web 代理 /api）'
     fi
-    if [[ "$web_ready" == "0" ]] && curl -fsS -m 4 http://127.0.0.1:8080/ >/dev/null 2>&1; then
-      web_ready=1; ok '前端 Web 就绪 :8080'
+    if [[ "$web_ready" == "0" ]] && curl -fsS -m 4 "http://127.0.0.1:${WEB_PORT:-8080}/" >/dev/null 2>&1; then
+      web_ready=1; ok "前端 Web 就绪 :${WEB_PORT:-8080}"
     fi
     [[ "$api_ready" == "1" && "$web_ready" == "1" ]] && break
     sleep 5
   done
-  [[ "$api_ready" == "0" ]] && warn '后端 6 分钟内未就绪，请执行 docker compose logs api 排查'
+  [[ "$api_ready" == "0" ]] && warn "后端 6 分钟内未就绪，请执行 docker compose logs api 排查（探针：$HEALTH_URL）"
   [[ "$web_ready" == "0" ]] && warn '前端 6 分钟内未就绪，首次构建较慢可稍后刷新页面'
 fi
 

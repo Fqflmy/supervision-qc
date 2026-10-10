@@ -84,6 +84,7 @@ import {
   Medal,
   Setting,
   Share,
+  User,
   UserFilled,
 } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
@@ -138,6 +139,9 @@ const allMenus = [
   },
   { name: 'users', title: '用户与授权', icon: UserFilled, perm: 'admin:*' as Permission },
   { name: 'system', title: '系统与审计', icon: Setting, perm: 'admin:*' as Permission },
+  // 个人中心：**无 perm，所有角色可见** —— 它是用户改自己密码、
+  // 确认身份登记的地方，也是强制改密时唯一的放行目标。
+  { name: 'profile', title: '个人中心', icon: User },
 ]
 
 /**

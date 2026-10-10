@@ -1,5 +1,5 @@
 /** 与后端 OpenAPI 契约对应的 TypeScript 类型定义。 */
-import { api, type PageData } from './http'
+import { api, download, saveBlob, type PageData } from './http'
 
 export { api }
 export type { PageData }
@@ -20,11 +20,15 @@ export interface User {
   /** 报告中的签认署名；留空时展示回退到 full_name */
   signature?: string | null
   email?: string | null
+  phone?: string | null
   role: 'admin' | 'kb_manager' | 'engineer' | 'expert' | 'viewer' | string
   specialties: string[]
   project_ids: number[]
   is_active: boolean
-  /** 管理员重置过密码，应尽快自行修改（系统暂无自助改密页，仅作提示） */
+  /**
+   * 管理员重置过密码，需先到个人中心自行修改。
+   * 为 true 时路由守卫会把用户**留在个人中心**直到改密完成。
+   */
   must_change_password?: boolean
 }
 
@@ -59,6 +63,34 @@ export const authApi = {
   logout: () => api.post<{ message: string }>('/auth/logout'),
   /** 获取演示身份。生产环境返回 enabled=false，登录页不显示选择器。 */
   demoIdentities: () => api.get<DemoIdentityResult>('/auth/demo-identities'),
+
+  /**
+   * 个人中心：自己的身份信息 + 被授权的项目。
+   *
+   * 与 `usersApi.getUser()` 的区别：后者是**管理员视角**（可看他人、含管理字段）；
+   * 本接口只能看自己，不含角色 / 项目授权等由管理员维护的字段。
+   */
+  profile: () => api.get<ProfileResult>('/auth/profile'),
+
+  /**
+   * 个人中心：自助修改密码（需验证当前密码）。
+   *
+   * ⚠️ `old_password` 必须提供：否则 token 泄漏即等于账号被永久接管
+   * （攻击者可静默改密，把真实用户锁在外面）。后端会校验。
+   *
+   * 成功后后端**重新签发 token**（清除 must_change_password 标记），
+   * 因此调用方必须用返回的 token 覆盖本地存储，否则会陷入「改完还被拦」。
+   */
+  changePassword: (payload: { old_password: string; new_password: string }) =>
+    api.post<LoginResult>('/auth/password', payload),
+}
+
+/** 个人中心返回：身份信息 + 授权项目 */
+export interface ProfileResult {
+  user: User
+  projects: { id: number; code: string; name: string }[]
+  /** 管理员不受项目隔离限制 */
+  is_admin: boolean
 }
 
 // --------------------------------------------------------------------------- //
@@ -404,6 +436,14 @@ export const evalApi = {
     api.post<EvalRunResult>(`/eval/tasks/${id}/run`, undefined, { resume, force }),
   submit: (id: string) => api.post<{ task_id: string; current_state: string }>(`/eval/tasks/${id}/submit`),
   report: (id: string) => api.get<EvalReport>(`/eval/tasks/${id}/report`),
+  /**
+   * 下载评估报告 PDF（正式可交付形态）。
+   *
+   * 走 api.download 而不是 api.get —— 二进制响应不是 `{code,message,data}` 信封，
+   * 用 request() 会解析失败。后端在 Content-Disposition 里给出含中文的文件名。
+   * 导出行为会在后端留下审计记录（AuditAction.REPORT_EXPORT）。
+   */
+  downloadReportPdf: (id: string) => download(`/eval/tasks/${id}/report/pdf`),
   resume: (id: string, payload: { action: string; corrected_matches?: Record<string, unknown>[]; comment?: string }) =>
     api.post<{ task_id: string; current_state: string; feedback: number }>(`/eval/tasks/${id}/resume`, payload),
 }

@@ -231,9 +231,55 @@ Write-Host '  首次运行需构建镜像，可能耗时数分钟；进度写入
 $upArgs = @('compose', 'up', '-d')
 if ($Build) { $upArgs += '--build' }
 
-$code = Invoke-Docker -Arguments $upArgs -LogName 'logs\compose-up.log'
+<#
+带重试的上线。
+
+为什么必须重试：`docker compose up -d` 在**需要构建镜像**时会把构建过程一并做掉，
+而镜像构建依赖外网拉取基础镜像与 pip 包。构建期网络抖动（跨境链路尤其明显）会让
+整个命令以非 0 退出，但错误往往是瞬时的 —— 实测遇到过
+`ReadTimeoutError: HTTPSConnectionPool(...) Read timed out` 与
+`error: subprocess-exited-with-error`，**隔一次重跑就成功**。
+
+若不做重试，用户看到的就是「一键启动失败」，需要自己反复重跑才知道是网络问题。
+这里重试 3 次并给出递增等待，同时把每次尝试的分段日志留档（logs\compose-up.attemptN.log），
+便于区分「网络抖动」与「配置真错」—— 后者重试不会成功，日志也更值得看。
+#>
+$maxAttempts = 3
+$code = 1
+for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+    # 第 1 次用固定名，后续分段落盘，便于区分「网络抖动」与「配置真错」
+    if ($attempt -eq 1) { $logName = 'logs\compose-up.log' } else { $logName = "logs\compose-up.attempt$attempt.log" }
+    if ($attempt -gt 1) {
+        $waitSec = 5 * ($attempt - 1)
+        # ⚠️ 这里必须用 $(...) 而不是 ${attempt - 1}：
+        # ${...} 是**变量名**定界语法，写 `${attempt - 1}` 会被当成名为
+        # 「attempt - 1」的变量，导致 PowerShell 报
+        # `Unexpected token '}' in expression or statement`。
+        $prev = $attempt - 1
+        Write-Warn2 "第 $prev 次启动未成功，$waitSec s 后重试（共 $maxAttempts 次）…"
+        Start-Sleep -Seconds $waitSec
+    }
+    $code = Invoke-Docker -Arguments $upArgs -LogName $logName
+    if ($code -eq 0) {
+        if ($attempt -gt 1) { Write-Ok "第 $attempt 次尝试成功（前几次为网络抖动）" }
+        break
+    }
+}
+
 if ($code -ne 0) {
-    Write-Err '服务启动失败，详见 logs\compose-up.log（末尾通常有具体原因）'
+    Write-Err "服务启动失败（已重试 $maxAttempts 次），详见 logs\compose-up*.log"
+    # 从日志里提取最可能的根因，避免用户面对几千行构建日志无从下手
+    $lastLog = Join-Path $LogDir "compose-up.attempt$maxAttempts.log"
+    if (-not (Test-Path $lastLog)) { $lastLog = Join-Path $LogDir 'compose-up.log' }
+    if (Test-Path $lastLog) {
+        $hints = Select-String -Path $lastLog -Pattern 'ReadTimeoutError|Connection timed out|Temporary failure|Could not resolve|no space left|Cannot connect to the Docker daemon|manifest unknown|pull access denied' -ErrorAction SilentlyContinue |
+            Select-Object -Last 3
+        if ($hints) {
+            Write-Host '  可能的根因：' -ForegroundColor Yellow
+            foreach ($h in $hints) { Write-Host "    $($h.Line.Trim())" -ForegroundColor DarkYellow }
+            Write-Host '  → 网络类问题可直接重跑本脚本；磁盘/守护进程类问题需先处理环境。' -ForegroundColor Gray
+        }
+    }
     Write-Host '  排查：docker compose logs --tail 50 api' -ForegroundColor Gray
     exit 1
 }
