@@ -492,16 +492,35 @@ class ReviewDecisionRequest(BaseModel):
 
 
 class ReviewStatusResponse(BaseModel):
-    """报告复核状态与裁定结果。"""
+    """报告复核状态与复核决定。
+
+    ⚠️ 术语对象（本项目最易混淆处，改动前请先读）
+    --------------------------------------------
+    本响应含**两个不同对象的判定**，二者并存、互不覆盖：
+
+    - ``machine_*``：**AI 对工程质量的判定**（``overall_verdict``）；
+    - ``review_decision*`` / ``human_verdict*``：**人工对 AI 报告的取舍**
+      （报告能否对外出具）。
+
+    人工决定的标签刻意用**动作词**（接受报告 / 退回报告）而不是
+    「合格 / 不合格」：后者会让人误以为是工程质量结论。
+    对象说明放在 ``review_decision_object_note``，界面须与值同时展示。
+    """
 
     task_id: str
     report_id: Optional[str] = None
     current_state: str
-    #: 机器结论（AI 生成，不被人工覆盖）
+    #: 机器结论（AI 生成，不被人工覆盖）。对象：**工程质量**
     machine_verdict: Optional[str] = None
     machine_verdict_label: Optional[str] = None
+    #: 机器结论的对象说明
+    machine_verdict_object_note: str = "AI 对工程质量的判定"
     risk_level: Optional[str] = None
-    #: 人工裁定
+    #: 人工复核决定（动作词）。对象：**AI 报告**
+    review_decision: Optional[str] = None
+    review_decision_label: Optional[str] = None
+    review_decision_object_note: str = "人工对 AI 报告的取舍（不是判定工程质量）"
+    #: 历史字段，保留兼容（值 qualified / unqualified）
     human_verdict: Optional[str] = None
     human_verdict_label: Optional[str] = None
     review_comment: Optional[str] = None
@@ -511,6 +530,8 @@ class ReviewStatusResponse(BaseModel):
     is_final: bool = False
     review_status: str = "pending"
     review_status_label: str = "待复核"
+    #: 复核状态的后果说明（如「不得作为正式依据」）
+    review_status_note: Optional[str] = None
     version: int = 1
 
 

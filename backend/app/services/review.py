@@ -36,8 +36,14 @@ from app.constants import (
     AuditAction,
     EvalState,
     HumanVerdict,
+    REVIEW_DECISION_LABELS,
+    REVIEW_DECISION_OBJECT_NOTE,
+    REVIEW_STATUS_LABELS,
+    REVIEW_STATUS_NOTES,
     ReviewStatus,
     progress_of,
+    review_decision_label,
+    review_decision_of,
     review_status_of,
 )
 from app.core.errors import ConflictError, NotFoundError, ParamInvalidError
@@ -60,18 +66,36 @@ def _utcnow() -> dt.datetime:
 
 
 def report_review_payload(report: EvalReport | None) -> dict[str, Any]:
-    """报告的复核相关字段（供接口返回，统一口径）。"""
+    """报告的复核相关字段（供接口返回，统一口径）。
+
+    ⚠️ 术语约定（本项目最易混淆处）
+    ------------------------------
+    本函数返回的是**人工对「AI 报告」的决定**，不是对工程质量的判定。
+    因此除 ``human_verdict``（历史字段，保留兼容）外，额外返回：
+
+    - ``review_decision`` / ``review_decision_label``：
+      **动作词**（接受报告 / 退回报告）——动作天然绑定对象，
+      不会像「复核合格」那样被误读成「工程合格」；
+    - ``review_decision_object_note`` / ``review_status_note``：
+      对象说明与后果说明，界面须与值同时展示，避免脱离语境。
+
+    工程质量结论在 ``eval_report.overall_verdict``，由 AI 给出，两者**并存不覆盖**。
+    """
     if report is None:
         return {
             "human_verdict": None,
             "human_verdict_label": None,
+            "review_decision": None,
+            "review_decision_label": None,
+            "review_decision_object_note": REVIEW_DECISION_OBJECT_NOTE,
             "review_comment": None,
             "reviewed_by": None,
             "reviewed_by_name": None,
             "reviewed_at": None,
             "is_final": False,
             "review_status": ReviewStatus.PENDING.value,
-            "review_status_label": "待复核",
+            "review_status_label": REVIEW_STATUS_LABELS[ReviewStatus.PENDING],
+            "review_status_note": REVIEW_STATUS_NOTES[ReviewStatus.PENDING],
         }
     status = review_status_of(report.human_verdict, report.is_final)
     return {
@@ -81,17 +105,20 @@ def report_review_payload(report: EvalReport | None) -> dict[str, Any]:
         )
         if report.human_verdict
         else None,
+        # 展示层决定：动作词 + 对象说明
+        "review_decision": review_decision_of(report.human_verdict).value
+        if review_decision_of(report.human_verdict)
+        else None,
+        "review_decision_label": review_decision_label(report.human_verdict),
+        "review_decision_object_note": REVIEW_DECISION_OBJECT_NOTE,
         "review_comment": report.review_comment,
         "reviewed_by": report.reviewed_by,
         "reviewed_by_name": None,  # 由调用方按需补充（避免在纯函数里查库）
         "reviewed_at": report.reviewed_at,
         "is_final": report.is_final,
         "review_status": status.value,
-        "review_status_label": {
-            ReviewStatus.PENDING: "待复核",
-            ReviewStatus.SIGNED: "已签发",
-            ReviewStatus.REJECTED: "已复核不合格",
-        }[status],
+        "review_status_label": REVIEW_STATUS_LABELS[status],
+        "review_status_note": REVIEW_STATUS_NOTES[status],
     }
 
 

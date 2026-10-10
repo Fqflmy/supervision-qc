@@ -23,7 +23,13 @@ sys.path.insert(0, str(BACKEND))
 ARTIFACTS = ROOT / "var" / "artifacts"
 
 #: 只读用户**不应**看到的写操作按钮文案
-WRITE_ACTIONS = ["重新执行", "人工复核", "判定合格", "判定不合格", "新建评估任务", "提交并重新执行"]
+#: 只读用户不得看到的写操作入口。
+#: ⚠️ 含新旧两套文案：复核按钮已由「判定合格/不合格」改为动作词
+#: 「接受并签发/退回报告」，两套都要拦（旧文案若残留同样算泄漏）。
+WRITE_ACTIONS = [
+    "重新执行", "人工复核", "新建评估任务", "提交并重新执行",
+    "判定合格", "判定不合格", "接受并签发", "退回报告",
+]
 
 
 def _login(page, base: str, card: str) -> None:
@@ -86,14 +92,24 @@ def main() -> int:
         else:
             values = [c.inner_text().strip() for c in rows.nth(0).locator("td").all()]
             print(f"  首行: {values}")
-            for col in ("总体结论", "风险", "复核"):
-                if col not in headers:
-                    failures.append(f"表头缺少「{col}」")
-                else:
-                    v = values[headers.index(col)]
-                    print(f"  「{col}」= {v!r}")
-                    if v in ("", "-"):
-                        failures.append(f"「{col}」为空")
+        # 列名已整改：总体结论→评估结论、复核→报告复核。
+        # 列头还带对象说明小字（如「AI 判工程质量」），因此用子串匹配。
+        col_aliases = {
+            "评估结论": ("评估结论", "总体结论"),
+            "风险": ("风险",),
+            "报告复核": ("报告复核", "复核"),
+        }
+        for col, aliases in col_aliases.items():
+            idx = next(
+                (i for i, h in enumerate(headers) if any(a in h for a in aliases)), None
+            )
+            if idx is None:
+                failures.append(f"表头缺少「{col}」（现有：{headers}）")
+            else:
+                v = values[idx] if idx < len(values) else ""
+                print(f"  「{col}」= {v!r}")
+                if v in ("", "-"):
+                    failures.append(f"「{col}」为空")
         page.screenshot(path=str(ARTIFACTS / "22-viewer-reports.png"), full_page=True)
 
         print()

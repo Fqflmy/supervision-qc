@@ -143,6 +143,75 @@ HUMAN_VERDICT_LABELS = {
 }
 
 
+class ReviewDecision(StrEnum):
+    """报告复核决定（**面向对象是「报告」，不是工程质量**）。
+
+    ⚠️ 术语说明（这是本项目最容易混淆的地方）
+    -----------------------------------------
+    系统里存在**两个不同对象的判定**，早期版本共用了「合格/不合格」一个词，
+    导致用户无法分辨「是 AI 报告的结果合格，还是评估项目本身合格」：
+
+    ==========  ======================  ========  ====================
+    判定对象     含义                    判定人     取值
+    ==========  ======================  ========  ====================
+    工程质量     AI 对实体/检验批的判定    AI        ``Verdict``（符合/不符合）
+    **AI 报告**  **能否对外出具**          **人工**  ``ReviewDecision``
+    ==========  ======================  ========  ====================
+
+    本枚举是**后者**，语义来自 SRS 第 92 行：质量评估专家的职责是
+    「复核**评估结论**、修订评分、**终审签发**」——
+    复核对象是**报告与其中的评估结论**，不是工程实体。
+
+    **显示用动作词而非状态词**：「接受报告」不可能被误读成「工程合格」，
+    而「复核合格」一定会被误读。动作词天然绑定对象。
+
+    ⚠️ 与 ``HumanVerdict`` 的关系：本枚举是 ``HumanVerdict`` 的**展示层映射**，
+    不新增数据库字段 —— 两者一一对应（qualified→accept、unqualified→return），
+    拆成两个字段在当前流程下总是同步，只会增加不一致的风险。
+    """
+
+    #: 接受 AI 报告并签发（可作为正式依据）
+    ACCEPT = "accept"
+    #: 退回 AI 报告，不予签发
+    RETURN = "return"
+
+
+REVIEW_DECISION_LABELS = {
+    ReviewDecision.ACCEPT: "接受报告",
+    ReviewDecision.RETURN: "退回报告",
+}
+
+#: 复核决定的对象说明（界面上必须与决定值同时出现，避免脱离语境被误读）
+REVIEW_DECISION_OBJECT_NOTE = "人工对 AI 报告的取舍（不是判定工程质量）"
+
+#: 评估结论的对象说明
+VERDICT_OBJECT_NOTE = "AI 对工程质量的判定"
+
+#: 两个判定的并列说明（详情页在两栏之间展示，解释为何可以「不符合 + 接受」）
+DUAL_VERDICT_NOTE = "两者判定对象不同，结论可并存、不矛盾"
+
+
+def review_decision_of(human_verdict: str | None) -> ReviewDecision | None:
+    """由 ``HumanVerdict`` 派生复核决定；未裁定返回 ``None``。
+
+    未裁定返回 ``None`` 而不是默认值 —— 界面才能正确显示「待复核」，
+    而不是让人误以为已被接受或退回。
+    """
+    if not human_verdict:
+        return None
+    if human_verdict == HumanVerdict.QUALIFIED.value:
+        return ReviewDecision.ACCEPT
+    if human_verdict == HumanVerdict.UNQUALIFIED.value:
+        return ReviewDecision.RETURN
+    return None
+
+
+def review_decision_label(human_verdict: str | None) -> str | None:
+    """复核决定的中文标签（动作词）。"""
+    decision = review_decision_of(human_verdict)
+    return REVIEW_DECISION_LABELS.get(decision) if decision else None
+
+
 class ReviewStatus(StrEnum):
     """报告复核状态（展示用，由 human_verdict + is_final 派生）。"""
 
@@ -157,7 +226,16 @@ class ReviewStatus(StrEnum):
 REVIEW_STATUS_LABELS = {
     ReviewStatus.PENDING: "待复核",
     ReviewStatus.SIGNED: "已签发",
-    ReviewStatus.REJECTED: "已复核不合格",
+    # 旧值是「已复核不合格」——「不合格」会与工程质量结论混淆：
+    # 这里指的是**报告被退回、未予签发**，不是工程不合格。
+    ReviewStatus.REJECTED: "已退回",
+}
+
+#: 复核状态的补充说明（界面在状态旁展示其后果，避免用户只看标签猜含义）
+REVIEW_STATUS_NOTES = {
+    ReviewStatus.PENDING: "尚无人工复核决定，不得作为正式依据",
+    ReviewStatus.SIGNED: "已经人工复核签发，可作为正式依据",
+    ReviewStatus.REJECTED: "报告未通过复核、未予签发，不得作为正式依据",
 }
 
 

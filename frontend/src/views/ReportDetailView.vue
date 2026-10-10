@@ -26,8 +26,8 @@
         show-icon
         :closable="false"
         style="margin-bottom: 14px"
-        title="该报告尚未经人工复核签发"
-        description="未签发的报告仅供内部参考，不得作为对外出具的正式依据。"
+        title="该报告尚未签发"
+        :description="reviewStatusNote(review.review_status)"
       />
       <el-alert
         v-else-if="review?.human_verdict === 'unqualified'"
@@ -35,16 +35,20 @@
         show-icon
         :closable="false"
         style="margin-bottom: 14px"
-        title="该报告已被人工复核判定为不合格"
-        description="报告不予签发，不可作为正式依据。"
+        title="该报告未通过复核，未予签发"
+        description="复核决定为「退回报告」。报告不予签发，不可作为正式依据；评估结论仍在下方完整保留。"
       />
 
-      <!-- 机器结论与人工裁定并列（与审核人员看到的同一套信息，但只读） -->
+      <!-- 机器结论与人工复核决定并列（与审核人员看到的同一套信息，但只读）。
+           ⚠️ 两者判定对象不同：左边是 AI 判工程质量，右边是人工判「报告能否出具」。
+           必须成对展示并各带对象说明，否则「复核合格」会被误读成「工程合格」。 -->
       <div class="review-panel">
         <div class="review-panel__col">
           <div class="review-panel__title">
-            评估结论<el-tag size="small" effect="plain" style="margin-left: 8px">AI 生成</el-tag>
+            评估结论
+            <el-tag size="small" effect="plain" style="margin-left: 8px">AI 生成</el-tag>
           </div>
+          <div class="review-panel__object">{{ VERDICT_OBJECT_NOTE }}</div>
           <el-descriptions :column="1" size="small" border>
             <el-descriptions-item label="总体结论">
               <span v-if="report?.overall_verdict" class="tag" :class="`tag--${verdictTone(report.overall_verdict)}`">
@@ -65,38 +69,61 @@
 
         <div class="review-panel__col">
           <div class="review-panel__title">
-            复核与签发
+            报告复核与签发
             <el-tag
               size="small"
               :type="review?.review_status === 'signed' ? 'success' : review?.review_status === 'rejected' ? 'danger' : 'warning'"
               effect="plain"
               style="margin-left: 8px"
             >
-              {{ review?.review_status_label ?? '待复核' }}
+              {{ review?.review_status_label ?? reviewStatusText(review?.review_status) }}
             </el-tag>
           </div>
+          <div class="review-panel__object">{{ REVIEW_DECISION_OBJECT_NOTE }}</div>
           <el-descriptions :column="1" size="small" border>
-            <el-descriptions-item label="复核结论">
+            <el-descriptions-item label="复核决定">
               <span
                 v-if="review?.human_verdict"
                 class="tag"
-                :class="review.human_verdict === 'qualified' ? 'tag--ok' : 'tag--danger'"
-              >{{ review.human_verdict_label }}</span>
-              <span v-else class="muted">尚未裁定</span>
+                :class="`tag--${reviewDecisionTone(review.human_verdict)}`"
+              >{{ review.review_decision_label ?? reviewDecisionLabel(review.human_verdict) }}</span>
+              <span v-else class="muted">尚未复核</span>
             </el-descriptions-item>
-            <el-descriptions-item label="签认人">
-              {{ review?.reviewed_by_name || '-' }}
-              <span v-if="review?.reviewed_at" class="small muted"> · {{ fmtTime(review.reviewed_at) }}</span>
+            <el-descriptions-item label="复核人">
+              <template v-if="review?.reviewed_by_name">
+                {{ review.reviewed_by_name }}
+                <span v-if="review.reviewed_by_position" class="muted small">（{{ review.reviewed_by_position }}）</span>
+                <span v-if="review.reviewed_at" class="small muted"> · {{ fmtTime(review.reviewed_at) }}</span>
+              </template>
+              <span v-else class="muted">-</span>
             </el-descriptions-item>
-            <el-descriptions-item label="是否签发">
-              <span v-if="review?.is_final" class="tag tag--ok">已签发生效</span>
-              <span v-else class="tag tag--warn">未签发</span>
+            <el-descriptions-item label="签发状态">
+              <template v-if="review?.is_final">
+                <span class="tag tag--ok">已签发</span>
+                <span class="small muted" style="margin-left: 6px">可作为正式依据</span>
+              </template>
+              <template v-else>
+                <span class="tag tag--warn">未签发</span>
+                <span class="small muted" style="margin-left: 6px">不得作为正式依据</span>
+              </template>
             </el-descriptions-item>
-            <el-descriptions-item v-if="review?.review_comment" label="裁定依据">
+            <el-descriptions-item v-if="review?.review_comment" label="复核意见">
               {{ review.review_comment }}
             </el-descriptions-item>
           </el-descriptions>
         </div>
+      </div>
+
+      <!-- 解释「为什么可以 不符合 + 接受报告」：不说清这一点，用户仍会困惑 -->
+      <div v-if="review?.human_verdict && report?.overall_verdict" class="dual-note">
+        <el-icon><InfoFilled /></el-icon>
+        <span>
+          <strong>{{ DUAL_VERDICT_NOTE }}</strong> ——
+          本报告的评估结论（工程质量）是「{{ verdictLabel(report.overall_verdict) }}」，
+          而复核决定针对的是<strong>报告本身</strong>：{{ review.review_decision_label ?? reviewDecisionLabel(review.human_verdict) }}。
+          <template v-if="review.is_final">该报告已签发，评估结论按原样生效。</template>
+          <template v-else>该报告未签发。</template>
+        </span>
       </div>
     </section>
 
@@ -146,6 +173,7 @@
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { InfoFilled } from '@element-plus/icons-vue'
 import {
   evalApi,
   reviewApi,
@@ -155,9 +183,16 @@ import {
 } from '@/api'
 import MarkdownView from '@/components/MarkdownView.vue'
 import {
+  DUAL_VERDICT_NOTE,
+  REVIEW_DECISION_OBJECT_NOTE,
   RISK_LABELS,
   RISK_TONES,
+  VERDICT_OBJECT_NOTE,
   fmtTime,
+  reviewDecisionLabel,
+  reviewDecisionTone,
+  reviewStatusNote,
+  reviewStatusText,
   verdictLabel,
   verdictTone,
 } from '@/utils/format'
@@ -251,7 +286,36 @@ onMounted(load)
   font-size: 13px;
   font-weight: 600;
   color: var(--ink-900);
+  margin-bottom: 4px;
+}
+
+/* 对象说明：必须紧贴结论值，用户才知道这个结论在判什么 */
+.review-panel__object {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-500);
   margin-bottom: 8px;
+}
+
+/* 「判定对象不同，结论可并存」的解释条 */
+.dual-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 9px 12px;
+  border-radius: 5px;
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--ink-700);
+  background: var(--el-color-primary-light-9);
+  border: 1px solid var(--el-color-primary-light-7);
+}
+
+.dual-note .el-icon {
+  margin-top: 2px;
+  color: var(--el-color-primary);
+  flex: 0 0 auto;
 }
 
 @media (max-width: 1100px) {

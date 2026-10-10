@@ -36,7 +36,16 @@
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="总体结论" width="120" align="center">
+        <!-- ⚠️ 两列必须同时可见，且列头写明判定对象：
+             「评估结论」= AI 判工程质量；「报告复核」= 人工判报告能否出具。
+             只显示其中一列会让用户把「报告被退回」误读成「工程不合格」。 -->
+        <el-table-column width="120" align="center">
+          <template #header>
+            <div class="col-head">
+              <div>评估结论</div>
+              <div class="col-head__note">AI 判工程质量</div>
+            </div>
+          </template>
           <template #default="{ row }">
             <span v-if="row.verdict" class="tag" :class="`tag--${verdictTone(row.verdict)}`">
               {{ verdictLabel(row.verdict) }}
@@ -44,7 +53,7 @@
             <span v-else class="muted small">-</span>
           </template>
         </el-table-column>
-        <el-table-column label="风险" width="90" align="center">
+        <el-table-column label="风险" width="80" align="center">
           <template #default="{ row }">
             <span v-if="row.risk_level" class="tag" :class="`tag--${RISK_TONES[row.risk_level] ?? 'muted'}`">
               {{ RISK_LABELS[row.risk_level] ?? row.risk_level }}
@@ -52,12 +61,26 @@
             <span v-else class="muted small">-</span>
           </template>
         </el-table-column>
-        <!-- 复核状态是只读用户最需要的信息：未签发的报告不得作为正式依据 -->
-        <el-table-column label="复核" width="110" align="center">
+        <!-- 复核状态是只读用户最需要的信息：未签发的报告不得作为正式依据。
+             值用「已退回」而非「不合格」—— 后者会与工程质量结论混淆。 -->
+        <el-table-column width="130" align="center">
+          <template #header>
+            <div class="col-head">
+              <div>报告复核</div>
+              <div class="col-head__note">人工判报告</div>
+            </div>
+          </template>
           <template #default="{ row }">
-            <span v-if="row.review_status === 'signed'" class="tag tag--ok">已签发</span>
-            <span v-else-if="row.review_status === 'rejected'" class="tag tag--danger">不合格</span>
-            <span v-else class="tag tag--warn">待复核</span>
+            <el-tooltip :content="reviewStatusNote(row.review_status)" placement="top">
+              <span
+                class="tag"
+                :class="{
+                  'tag--ok': row.review_status === 'signed',
+                  'tag--danger': row.review_status === 'rejected',
+                  'tag--warn': row.review_status !== 'signed' && row.review_status !== 'rejected',
+                }"
+              >{{ reviewStatusText(row.review_status) }}</span>
+            </el-tooltip>
           </template>
         </el-table-column>
         <el-table-column label="完成时间" width="170">
@@ -98,6 +121,8 @@ import {
   RISK_TONES,
   STATE_LABELS,
   fmtTime,
+  reviewStatusNote,
+  reviewStatusText,
   stateLabel,
   stateTone,
   verdictLabel,

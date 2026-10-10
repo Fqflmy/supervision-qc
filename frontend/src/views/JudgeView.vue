@@ -12,7 +12,7 @@
         <div class="metric__foot">低分阈值 {{ dashboard?.threshold ?? '-' }}</div>
       </div>
       <div class="metric">
-        <div class="metric__label">待人工复核</div>
+        <div class="metric__label">累计待复核标记</div>
         <div class="metric__value">{{ dashboard?.needs_human_count ?? 0 }}</div>
         <!-- 口径说明：这是「历史上被 Judge 标记 needs_human 的评审记录数」，
              与下方「待复核队列」（当前处于 NEED_HUMAN/DEGRADED 的任务）不是同一个数 ——
@@ -97,7 +97,16 @@
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="机器结论" width="100" align="center">
+        <!-- ⚠️ 这列的值来自 report.overall_verdict，可能是「条款判定」（符合/不符合）
+             也可能是「Judge 等级」（优秀/良好/合格/不合格）。
+             叫「机器结论」会与右边的「等级」列混淆，故改名并写明对象。 -->
+        <el-table-column width="110" align="center">
+          <template #header>
+            <div class="col-head">
+              <div>评估结论</div>
+              <div class="col-head__note">AI 判工程质量</div>
+            </div>
+          </template>
           <template #default="{ row }">
             <span v-if="row.machine_verdict" class="tag tag--info">
               {{ GRADE_LABELS[row.machine_verdict] ?? row.machine_verdict }}
@@ -115,14 +124,22 @@
             <span class="small muted">{{ row.finished_at ? fmtTime(row.finished_at) : '-' }}</span>
           </template>
         </el-table-column>
-        <!-- 行内直接裁定：审核人员看到队列就能立刻给出结论，不必先进详情 -->
-        <el-table-column label="裁定" width="190" align="right">
+        <!-- 行内直接复核：审核人员看到队列就能立刻给出决定，不必先进详情。
+             ⚠️ 复核对象是 **AI 报告**（能否对外出具），不是工程质量。
+             按钮用动作词，避免「判定合格」被误读成「工程合格」。 -->
+        <el-table-column width="220" align="right">
+          <template #header>
+            <div class="col-head">
+              <div>报告复核</div>
+              <div class="col-head__note">人工判报告</div>
+            </div>
+          </template>
           <template #default="{ row }">
             <el-button link type="success" size="small" @click="openDecision(row.task_id, 'qualified', row.version)">
-              判定合格
+              接受并签发
             </el-button>
             <el-button link type="danger" size="small" @click="openDecision(row.task_id, 'unqualified', row.version)">
-              判定不合格
+              退回报告
             </el-button>
             <el-button link type="primary" size="small" @click="open(row.task_id)">详情</el-button>
           </template>
@@ -133,7 +150,7 @@
     <!-- 裁定对话框（与任务详情页共用接口） -->
     <el-dialog
       v-model="decisionDialog"
-      :title="decision.verdict === 'qualified' ? '判定合格并签发' : '判定不合格'"
+      :title="decision.verdict === 'qualified' ? '接受报告并签发' : '退回报告'"
       width="560px"
     >
       <el-alert
@@ -141,22 +158,22 @@
         :closable="false"
         show-icon
         style="margin-bottom: 12px"
-        title="人工裁定不覆盖机器结论"
-        description="两者将并列留存以便对比；判定不合格需填写依据，该分歧会作为模型迭代样本。"
+        title="复核的是报告，不是重新判定工程质量"
+        description="工程质量结论由 AI 给出并完整保留；人工复核只决定这份报告能否对外出具，两者并列留存、互不覆盖。退回报告需填写依据，该分歧会作为模型迭代样本。"
       />
       <el-form label-width="90px">
-        <el-form-item label="裁定依据" :required="decision.verdict === 'unqualified'">
+        <el-form-item label="复核意见" :required="decision.verdict === 'unqualified'">
           <el-input
             v-model="decision.comment"
             type="textarea"
             :rows="3"
-            :placeholder="decision.verdict === 'unqualified' ? '必填：说明不合格的具体理由' : '可选'"
+            :placeholder="decision.verdict === 'unqualified' ? '必填：说明报告不可接受的具体理由' : '可选'"
           />
         </el-form-item>
         <el-form-item v-if="decision.verdict === 'unqualified'" label="处置方式">
           <el-radio-group v-model="decision.rerun">
             <el-radio :value="true">驳回重跑</el-radio>
-            <el-radio :value="false">直接落定不合格</el-radio>
+            <el-radio :value="false">直接结束（报告不予签发）</el-radio>
           </el-radio-group>
         </el-form-item>
       </el-form>
@@ -167,7 +184,7 @@
           :loading="deciding"
           @click="submitDecision"
         >
-          {{ decision.verdict === 'qualified' ? '确认合格并签发' : '确认不合格' }}
+          {{ decision.verdict === 'qualified' ? '确认接受并签发' : '确认退回报告' }}
         </el-button>
       </template>
     </el-dialog>
@@ -186,7 +203,15 @@
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="Judge 总分" width="110" align="center">
+        <!-- Judge 总分与等级评的是**报告质量**（引用是否准确、结论是否合理），
+             与「评估结论」（工程质量）是两个维度，列头需点明。 -->
+        <el-table-column width="110" align="center">
+          <template #header>
+            <div class="col-head">
+              <div>Judge 总分</div>
+              <div class="col-head__note">评报告质量</div>
+            </div>
+          </template>
           <template #default="{ row }">
             <span class="mono">{{ row.judge?.total_score != null ? fmtScore(row.judge.total_score) : '-' }}</span>
           </template>
@@ -205,7 +230,7 @@
         <el-table-column label="复核" width="110" align="center">
           <template #default="{ row }">
             <span v-if="row.review_status === 'signed'" class="tag tag--ok">已签发</span>
-            <span v-else-if="row.review_status === 'rejected'" class="tag tag--danger">不合格</span>
+            <span v-else-if="row.review_status === 'rejected'" class="tag tag--danger">已退回</span>
             <span v-else-if="row.judge?.needs_human" class="tag tag--warn">待复核</span>
             <span v-else-if="row.judge" class="tag tag--info">已通过</span>
             <span v-else class="muted">-</span>
@@ -332,7 +357,7 @@ async function submitDecision() {
   const { verdict, comment, rerun } = decision.value
 
   if (verdict === 'unqualified' && !comment.trim()) {
-    ElMessage.warning('判定不合格必须填写裁定依据')
+    ElMessage.warning('退回报告必须填写复核意见')
     return
   }
   if (verdict === 'qualified' && !comment.trim()) {
@@ -348,17 +373,17 @@ async function submitDecision() {
       expected_version: decisionVersion.value,
     })
     if (verdict === 'qualified') {
-      ElMessage.success('已判定合格并签发')
+      ElMessage.success('已接受报告并签发')
     } else if (rerun) {
-      ElMessage.success('已判定不合格，任务已驳回重跑')
+      ElMessage.success('已退回报告，任务已重新评估')
     } else {
-      ElMessage.warning('已判定不合格，报告不予签发')
+      ElMessage.warning('已退回报告，不予签发')
     }
     decisionDialog.value = false
     // 看板数字与队列都要刷新（裁定会同时影响两者）
     await load()
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '裁定失败')
+    ElMessage.error(err instanceof Error ? err.message : '复核提交失败')
   } finally {
     deciding.value = false
   }

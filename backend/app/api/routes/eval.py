@@ -27,6 +27,7 @@ from app.constants import (
     overall_verdict_label,
     progress_of,
     review_status_of,
+    VERDICT_OBJECT_NOTE,
 )
 from app.core.errors import ConflictError, ForbiddenError, NotFoundError
 from app.core.logging_conf import get_logger
@@ -610,7 +611,13 @@ def get_review(
     session: DbSession,
     user: CurrentUser,
 ) -> dict:
-    """查询任务的复核状态：机器结论、人工裁定、签发状态与签认人。"""
+    """查询任务的复核状态。
+
+    ⚠️ 返回含**两个不同对象的判定**，界面必须成对展示（术语见 constants.ReviewDecision）：
+    - ``machine_verdict*``：**AI 对工程质量**的判定；
+    - ``review_decision*``：**人工对 AI 报告**的取舍（接受/退回）。
+    另有 ``*_object_note`` 对象说明与 ``review_status_note`` 后果说明。
+    """
     task = session.get(EvalTask, task_id)
     if task is None:
         raise NotFoundError(f"任务不存在：{task_id}")
@@ -623,7 +630,15 @@ def get_review(
     if report is not None and report.reviewed_by:
         reviewer = session.get(User, report.reviewed_by)
         if reviewer is not None:
-            payload["reviewed_by_name"] = reviewer.full_name or reviewer.username
+            # 优先展示「签认署名」，回退到姓名，最后回退到账号 ——
+            # 报告签认要落到具体的人，署名是监理场景的正式称谓。
+            payload["reviewed_by_name"] = (
+                getattr(reviewer, "signature", None)
+                or reviewer.full_name
+                or reviewer.username
+            )
+            payload["reviewed_by_position"] = getattr(reviewer, "position", None)
+            payload["reviewed_by_org"] = getattr(reviewer, "org_name", None)
 
     return ok(
         {
@@ -638,6 +653,7 @@ def get_review(
             "machine_verdict_label": overall_verdict_label(
                 report.overall_verdict if report else None
             ),
+            "machine_verdict_object_note": VERDICT_OBJECT_NOTE,
             "risk_level": report.risk_level if report else None,
             **payload,
         }

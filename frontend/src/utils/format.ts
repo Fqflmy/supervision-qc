@@ -136,6 +136,73 @@ export function verdictTone(verdict?: string | null) {
   return verdict ? VERDICT_TONES[verdict] ?? 'muted' : 'muted'
 }
 
+/* ------------------------------------------------------------------ *
+ * 复核决定与复核状态
+ *
+ * ⚠️ 术语对象（本项目最易混淆处，改动前请先读）
+ * --------------------------------------------
+ * 系统里有两个**不同对象**的判定，早期版本都用「合格/不合格」显示，
+ * 导致用户无法分辨「是 AI 报告的结果合格，还是评估项目本身合格」：
+ *
+ *   工程质量  →  VERDICT_LABELS（符合 / 不符合），由 **AI** 判定
+ *   AI 报告   →  REVIEW_DECISION_LABELS（接受报告 / 退回报告），由 **人工** 决定
+ *
+ * 因此复核决定一律用**动作词**：动作天然绑定对象，
+ * 「接受报告」不可能被误读成「工程合格」，而「复核合格」一定会。
+ * 展示时请同时给出 `*_OBJECT_NOTE`，避免脱离语境。
+ * ------------------------------------------------------------------ */
+
+/** 复核决定（人工对 AI 报告的取舍） */
+export const REVIEW_DECISION_LABELS: Record<string, string> = {
+  accept: '接受报告',
+  return: '退回报告',
+}
+
+export const REVIEW_DECISION_TONES: Record<string, 'ok' | 'danger'> = {
+  accept: 'ok',
+  return: 'danger',
+}
+
+/** 由历史字段 human_verdict 派生动作词（后端未返回标签时的回退） */
+export function reviewDecisionLabel(humanVerdict?: string | null): string {
+  if (humanVerdict === 'qualified') return REVIEW_DECISION_LABELS.accept
+  if (humanVerdict === 'unqualified') return REVIEW_DECISION_LABELS.return
+  return '尚未复核'
+}
+
+export function reviewDecisionTone(humanVerdict?: string | null): 'ok' | 'danger' | 'muted' {
+  if (humanVerdict === 'qualified') return 'ok'
+  if (humanVerdict === 'unqualified') return 'danger'
+  return 'muted'
+}
+
+/** 复核状态标签（用「已退回」而非「已复核不合格」—— 后者会与工程质量混淆） */
+export const REVIEW_STATUS_TEXT: Record<string, string> = {
+  pending: '待复核',
+  signed: '已签发',
+  rejected: '已退回',
+}
+
+/** 复核状态的后果说明：只看标签无法判断这份报告能否作为依据 */
+export const REVIEW_STATUS_NOTES: Record<string, string> = {
+  pending: '尚无人工复核决定，不得作为正式依据',
+  signed: '已经人工复核签发，可作为正式依据',
+  rejected: '报告未通过复核、未予签发，不得作为正式依据',
+}
+
+/** 两个判定的对象说明（必须与值同时展示，否则又会被误读） */
+export const VERDICT_OBJECT_NOTE = 'AI 对工程质量的判定'
+export const REVIEW_DECISION_OBJECT_NOTE = '人工对 AI 报告的取舍（不是判定工程质量）'
+export const DUAL_VERDICT_NOTE = '两者判定对象不同，结论可并存、不矛盾'
+
+export function reviewStatusText(status?: string | null): string {
+  return status ? REVIEW_STATUS_TEXT[status] ?? status : '待复核'
+}
+
+export function reviewStatusNote(status?: string | null): string {
+  return status ? REVIEW_STATUS_NOTES[status] ?? '' : REVIEW_STATUS_NOTES.pending
+}
+
 export function fmtTime(value?: string | null, pattern = 'YYYY-MM-DD HH:mm:ss'): string {
   if (!value) return '-'
   const parsed = dayjs(value)

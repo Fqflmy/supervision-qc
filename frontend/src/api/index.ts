@@ -458,16 +458,38 @@ export type HumanVerdict = 'qualified' | 'unqualified'
 export type ReviewStatus = 'pending' | 'signed' | 'rejected'
 
 /** 人工裁定与签发状态 */
+/**
+ * 报告复核信息（复核决定的公共字段）。
+ *
+ * ⚠️ 术语对象（本项目最易混淆处）
+ * ------------------------------
+ * 这里描述的是**人工对「AI 报告」的决定**，对象是报告本身；
+ * 工程质量结论在 `machine_verdict*`（AI 判定），两者并存、互不覆盖。
+ *
+ * 因此复核决定一律显示为**动作词**（接受报告 / 退回报告），
+ * 而不是「合格 / 不合格」—— 后者会被误读成工程质量结论。
+ */
 export interface ReviewInfo {
+  /** 人工复核决定（动作词）：accept=接受报告 / return=退回报告 */
+  review_decision?: string | null
+  review_decision_label?: string | null
+  /** 决定对象的说明，界面必须与决定值同时展示 */
+  review_decision_object_note?: string | null
+  /** 历史字段（qualified / unqualified），保留兼容；显示请用 review_decision_label */
   human_verdict?: HumanVerdict | null
   human_verdict_label?: string | null
   review_comment?: string | null
   reviewed_by?: number | null
   reviewed_by_name?: string | null
+  /** 复核人岗位（报告签认需体现职务） */
+  reviewed_by_position?: string | null
+  reviewed_by_org?: string | null
   reviewed_at?: string | null
   is_final: boolean
   review_status: ReviewStatus
   review_status_label: string
+  /** 复核状态的后果说明（如「不得作为正式依据」） */
+  review_status_note?: string | null
 }
 
 export interface ReviewStatusInfo extends ReviewInfo {
@@ -475,15 +497,24 @@ export interface ReviewStatusInfo extends ReviewInfo {
   report_id?: string | null
   current_state: string
   version: number
-  /** 机器结论（AI 生成，不被人工覆盖） */
+  /**
+   * 机器结论（AI 生成，不被人工覆盖）。
+   * ⚠️ 对象是**工程质量**，与下面的复核决定是两件事。
+   */
   machine_verdict?: string | null
   machine_verdict_label?: string | null
+  /** 机器结论的对象说明（如「AI 对工程质量的判定」） */
+  machine_verdict_object_note?: string | null
   risk_level?: string | null
 }
 
 export interface ReviewDecisionResult {
   task_id: string
   report_id: string
+  /** 人工复核决定（动作词），如「接受报告」 */
+  review_decision?: string | null
+  review_decision_label?: string | null
+  /** 历史字段（qualified / unqualified） */
   human_verdict: HumanVerdict
   human_verdict_label: string
   review_comment: string
@@ -513,8 +544,16 @@ export interface PendingReviewItem {
 
 export const reviewApi = {
   /**
-   * 提交人工复核裁定（FR-AGT-11 报告签发）。
-   * 判定不合格时必须给 comment；rerun 决定驳回重跑还是直接落定不合格。
+   * 提交人工复核决定（FR-AGT-11 报告签发）。
+   *
+   * ⚠️ 本操作的对象是 **AI 报告**，不是工程质量。
+   * 工程质量结论由 AI 给出并存于 overall_verdict，人工复核**不覆盖**它。
+   * erdict 的内部值仍是 qualified / unqualified（历史字段），
+   * 界面一律显示为动作词「接受报告 / 退回报告」——
+   * 动作词天然绑定对象，不会像「复核合格」那样被误读成「工程合格」。
+   *
+   * 退回报告（unqualified）时必须给 comment；
+   * rerun 决定「退回并重新评估」还是「直接结束（不予签发）」。
    */
   decide: (
     taskId: string,
