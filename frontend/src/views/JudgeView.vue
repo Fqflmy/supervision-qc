@@ -199,10 +199,15 @@
             <span v-else class="muted">-</span>
           </template>
         </el-table-column>
-        <el-table-column label="复核" width="90" align="center">
+        <!-- 复核状态取自 report.human_verdict/is_final（review_status）。
+             此前读 row.judge?.needs_human —— 那是「Agent 是否需要人工介入」的标记，
+             且列表接口根本不返回该嵌套字段，导致本列**永远是 '-'**。 -->
+        <el-table-column label="复核" width="110" align="center">
           <template #default="{ row }">
-            <span v-if="row.judge?.needs_human" class="tag tag--warn">待复核</span>
-            <span v-else-if="row.judge" class="tag tag--ok">已通过</span>
+            <span v-if="row.review_status === 'signed'" class="tag tag--ok">已签发</span>
+            <span v-else-if="row.review_status === 'rejected'" class="tag tag--danger">不合格</span>
+            <span v-else-if="row.judge?.needs_human" class="tag tag--warn">待复核</span>
+            <span v-else-if="row.judge" class="tag tag--info">已通过</span>
             <span v-else class="muted">-</span>
           </template>
         </el-table-column>
@@ -279,7 +284,9 @@ async function load() {
   loading.value = true
   try {
     dashboard.value = await judgeApi.dashboard()
-    const list = await evalApi.list({ page: 1, page_size: 10 })
+    // with_judge=true：列表要显示 Judge 总分 / 等级 / 待复核，
+    // 这些字段在 JudgeReview 表中，不加此参数列表里恒为空（单元格永远显示 '-'）。
+    const list = await evalApi.list({ page: 1, page_size: 10, with_judge: true })
     // 拉取详情以获得 Judge 结果字段
     const details = await Promise.all(
       list.items.map((task) => evalApi.detail(task.id).catch(() => null)),

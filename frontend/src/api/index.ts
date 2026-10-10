@@ -270,6 +270,14 @@ export interface EvalTask {
   review_status?: ReviewStatus
   /** 乐观锁版本号（人工裁定时回传，防并发改判） */
   version?: number
+  /** Judge 评审摘要（仅 with_judge=true 时返回） */
+  judge?: {
+    review_id: number
+    total_score?: number | null
+    grade?: string | null
+    needs_human?: boolean | null
+    threshold?: number | null
+  } | null
 }
 
 export interface EvalTaskDetail extends EvalTask {
@@ -379,7 +387,7 @@ export const evalApi = {
     kb_ids?: number[]
     options?: Record<string, unknown>
   }) => api.post<{ task_id: string; current_state: string }>('/eval/tasks', payload),
-  list: (params: { page?: number; page_size?: number; state?: string; mine?: boolean }) =>
+  list: (params: { page?: number; page_size?: number; state?: string; mine?: boolean; with_judge?: boolean }) =>
     api.get<PageData<EvalTask>>('/eval/tasks', params),
   detail: (id: string) => api.get<EvalTaskDetail>(`/eval/tasks/${id}`),
   run: (id: string, resume = false, force = false) =>

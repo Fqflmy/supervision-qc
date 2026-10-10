@@ -89,6 +89,90 @@ def test_task_list_returns_version(client, requires_db):
     assert target.get("version") is not None, "列表未返回 version"
 
 
+def test_task_list_review_status_reflects_signoff(client, requires_db):
+    """列表的 review_status 必须反映签发状态（质量评审页的「复核」列依赖它）。
+
+    缺陷背景：该列此前读 ``row.judge?.needs_human`` —— 列表接口不返回嵌套
+    ``judge`` 字段，于是**永远是 '-'**，即使报告已签发也看不出来。
+    """
+    project_id, task_id = _seed_task_with_report("NEED_HUMAN")
+    _ensure_user("lbl_expert", "expert", project_id)
+    headers = _login(client, "lbl_expert")
+
+    def status_of() -> str | None:
+        items = client.get("/api/v1/eval/tasks?page_size=100", headers=headers).json()["data"][
+            "items"
+        ]
+        return next((i.get("review_status") for i in items if i["id"] == task_id), None)
+
+    assert status_of() == "pending", "未裁定时 review_status 应为 pending"
+
+    signed = client.post(
+        f"/api/v1/eval/tasks/{task_id}/review",
+        headers=headers,
+        json={"verdict": "qualified", "comment": "签发"},
+    )
+    assert signed.status_code == 200, signed.text
+    assert status_of() == "signed", "签发后列表 review_status 未变为 signed"
+
+
+def test_task_list_with_judge_returns_judge_summary(client, requires_db):
+    """``with_judge=true`` 应附带 Judge 摘要，否则质量评审页那几列永远为空。"""
+    from app.db.models import EvalReport, JudgeReview
+    from app.db.session import session_scope
+
+    project_id, task_id = _seed_task_with_report("NEED_HUMAN")
+    _ensure_user("lbl_expert", "expert", project_id)
+
+    # 造一条 Judge 评审记录
+    with session_scope() as session:
+        report = session.query(EvalReport).filter(EvalReport.task_id == uuid.UUID(task_id)).one()
+        session.add(
+            JudgeReview(
+                report_id=report.id,
+                total_score=3.08,
+                grade="qualified",
+                needs_human=True,
+                threshold=3.5,
+            )
+        )
+
+    headers = _login(client, "lbl_expert")
+
+    # 默认不带
+    plain = client.get("/api/v1/eval/tasks?page_size=100", headers=headers).json()["data"]["items"]
+    target = next(i for i in plain if i["id"] == task_id)
+    assert "judge" not in target, "默认不应附带 judge（保持列表轻量）"
+
+    # 显式请求则必须带上
+    rich = client.get(
+        "/api/v1/eval/tasks?page_size=100&with_judge=true", headers=headers
+    ).json()["data"]["items"]
+    target2 = next(i for i in rich if i["id"] == task_id)
+    assert "judge" in target2, "with_judge=true 未返回 judge 字段"
+    judge = target2["judge"]
+    assert judge is not None, "有 JudgeReview 记录时 judge 不应为 None"
+    assert float(judge["total_score"]) == 3.08
+    assert judge["grade"] == "qualified"
+    assert judge["needs_human"] is True
+    assert float(judge["threshold"]) == 3.5
+
+
+def test_task_list_with_judge_null_when_never_judged(client, requires_db):
+    """没跑过 LLM-as-Judge 时 judge 应为 None —— 界面显示 '-' 才是正确答案。"""
+    project_id, task_id = _seed_task_with_report("NEED_HUMAN")
+    _ensure_user("lbl_expert", "expert", project_id)
+    headers = _login(client, "lbl_expert")
+
+    items = client.get(
+        "/api/v1/eval/tasks?page_size=100&with_judge=true", headers=headers
+    ).json()["data"]["items"]
+    target = next(i for i in items if i["id"] == task_id)
+    assert target.get("judge", "missing") is None, (
+        "没有 JudgeReview 记录时应返回 null，而不是伪造分数"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # 2) 重跑必须清除上一次人工裁定
 # --------------------------------------------------------------------------- #

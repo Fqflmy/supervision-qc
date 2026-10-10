@@ -244,6 +244,9 @@ def list_tasks(
     page_size: int = Query(20, ge=1, le=100),
     state: Optional[str] = None,
     mine: bool = Query(False, description="仅看我发起的任务"),
+    with_judge: bool = Query(
+        False, description="是否附带 Judge 评审摘要（质量评审页需要，默认关闭以保证列表轻量）"
+    ),
 ) -> dict:
     # 默认只返回「当前用户可访问」的任务（本人发起 或 所属项目内）。
     # 修复前这里是默认返回全部用户、全部项目的任务，属越权。
@@ -280,6 +283,46 @@ def list_tasks(
         }
         for item in items:
             item["review_status"] = status_map.get(uuid.UUID(item["id"]), ReviewStatus.PENDING.value)
+
+        # with_judge=true 时附带 Judge 评审摘要。
+        # 为什么需要它：质量评审页的列表要显示「Judge 总分 / 等级 / 是否待复核」，
+        # 但这些字段只存在于 JudgeReview 表，列表接口原先不返回 ——
+        # 于是那几列**永远是空的**（前端读 row.judge?.xxx 恒为 undefined）。
+        # 默认关闭以保证普通列表的响应体轻量。
+        if with_judge:
+            report_ids = session.execute(
+                select(EvalReport.task_id, EvalReport.id).where(
+                    EvalReport.task_id.in_([t.id for t in rows])
+                )
+            ).all()
+            report_to_task = {rid: tid for tid, rid in report_ids}
+            judge_map: dict[uuid.UUID, dict] = {}
+            if report_to_task:
+                reviews = (
+                    session.execute(
+                        select(JudgeReview)
+                        .where(JudgeReview.report_id.in_(list(report_to_task)))
+                        .order_by(JudgeReview.id.desc())
+                    )
+                    .scalars()
+                    .all()
+                )
+                # 每个报告只取最新一次评审（已按 id 倒序，首次出现即最新）
+                for review in reviews:
+                    task_id = report_to_task.get(review.report_id)
+                    if task_id is None or task_id in judge_map:
+                        continue
+                    judge_map[task_id] = {
+                        "review_id": review.id,
+                        "total_score": float(review.total_score)
+                        if review.total_score is not None
+                        else None,
+                        "grade": review.grade,
+                        "needs_human": review.needs_human,
+                        "threshold": review.threshold,
+                    }
+            for item in items:
+                item["judge"] = judge_map.get(uuid.UUID(item["id"]))
 
     return ok(paginate(items, total, page, page_size))
 
