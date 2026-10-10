@@ -85,6 +85,14 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '评估报告', icon: 'Document', perm: 'eval:read' },
       },
       {
+        // 报告详情（只读）：只呈现报告与签发状态，不含 Token/迭代/执行轨迹等运维字段。
+        // 与 eval-detail（发起方/复核方工作台）区分 —— 只读用户不该看到写操作入口。
+        path: 'reports/:id',
+        name: 'report-detail',
+        component: () => import('@/views/ReportDetailView.vue'),
+        meta: { title: '报告详情', hidden: true, perm: 'eval:read' },
+      },
+      {
         path: 'judge',
         name: 'judge',
         component: () => import('@/views/JudgeView.vue'),

@@ -266,6 +266,9 @@ def list_tasks(
     with_judge: bool = Query(
         False, description="是否附带 Judge 评审摘要（质量评审页需要，默认关闭以保证列表轻量）"
     ),
+    with_report: bool = Query(
+        False, description="是否附带报告结论与风险等级（评估报告页需要，避免前端逐条查询）"
+    ),
 ) -> dict:
     # 默认只返回「当前用户可访问」的任务（本人发起 或 所属项目内）。
     # 修复前这里是默认返回全部用户、全部项目的任务，属越权。
@@ -292,16 +295,31 @@ def list_tasks(
     items = [_task_out(t) for t in rows]
     if rows:
         report_rows = session.execute(
-            select(EvalReport.task_id, EvalReport.human_verdict, EvalReport.is_final).where(
-                EvalReport.task_id.in_([t.id for t in rows])
-            )
+            select(
+                EvalReport.task_id,
+                EvalReport.human_verdict,
+                EvalReport.is_final,
+                EvalReport.overall_verdict,
+                EvalReport.risk_level,
+            ).where(EvalReport.task_id.in_([t.id for t in rows]))
         ).all()
         status_map = {
             task_id: review_status_of(human_verdict, is_final).value
-            for task_id, human_verdict, is_final in report_rows
+            for task_id, human_verdict, is_final, _, _ in report_rows
+        }
+        # with_report=true 时附带结论与风险。
+        # 为什么需要：评估报告页要显示每份报告的「总体结论 + 风险等级」，
+        # 若不给就会退化成前端**逐条查报告接口**（N+1 请求，任务多时明显变慢）。
+        # 字段名用 verdict（列表上下文更简洁）；报告详情接口仍是 overall_verdict。
+        report_map = {
+            task_id: {"verdict": verdict, "risk_level": risk}
+            for task_id, _, _, verdict, risk in report_rows
         }
         for item in items:
-            item["review_status"] = status_map.get(uuid.UUID(item["id"]), ReviewStatus.PENDING.value)
+            tid = uuid.UUID(item["id"])
+            item["review_status"] = status_map.get(tid, ReviewStatus.PENDING.value)
+            if with_report:
+                item.update(report_map.get(tid) or {"verdict": None, "risk_level": None})
 
         # with_judge=true 时附带 Judge 评审摘要。
         # 为什么需要它：质量评审页的列表要显示「Judge 总分 / 等级 / 是否待复核」，

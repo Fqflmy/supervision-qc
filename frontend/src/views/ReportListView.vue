@@ -139,25 +139,15 @@ const scopeWarning = computed(() => {
 async function load() {
   loading.value = true
   try {
+    // with_report=true：后端在列表里直接带出结论与风险等级，
+    // 避免前端**逐条查报告接口**（N+1 请求，任务多时明显变慢）。
     const result = await evalApi.list({
       page: page.value,
       page_size: pageSize.value,
       state: filters.state || undefined,
+      with_report: true,
     })
-    // 列表接口只给任务字段；报告结论需要逐条取报告（任务数有限，可接受）。
-    // 若后续报告数增大，应改为后端在列表里直接带出结论与风险。
-    const enriched = await Promise.all(
-      result.items.map(async (task) => {
-        if (!task.review_status) return { ...task }
-        try {
-          const report = await evalApi.report(task.id)
-          return { ...task, verdict: report.overall_verdict, risk_level: report.risk_level }
-        } catch {
-          return { ...task }
-        }
-      }),
-    )
-    tasks.value = enriched
+    tasks.value = result.items
     total.value = result.meta.total
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '加载失败')
@@ -167,7 +157,9 @@ async function load() {
 }
 
 function openDetail(id: string) {
-  router.push({ name: 'eval-detail', params: { id } })
+  // 跳到**只读报告详情**而非任务详情：任务详情是发起方/复核方工作台，
+  // 含 Token 消耗、迭代次数、执行轨迹与写操作按钮，对只读用户既无用也不该看。
+  router.push({ name: 'report-detail', params: { id } })
 }
 
 onMounted(async () => {

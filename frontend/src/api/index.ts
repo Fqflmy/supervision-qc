@@ -387,7 +387,7 @@ export const evalApi = {
     kb_ids?: number[]
     options?: Record<string, unknown>
   }) => api.post<{ task_id: string; current_state: string }>('/eval/tasks', payload),
-  list: (params: { page?: number; page_size?: number; state?: string; mine?: boolean; with_judge?: boolean }) =>
+  list: (params: { page?: number; page_size?: number; state?: string; mine?: boolean; with_judge?: boolean; with_report?: boolean }) =>
     api.get<PageData<EvalTask>>('/eval/tasks', params),
   detail: (id: string) => api.get<EvalTaskDetail>(`/eval/tasks/${id}`),
   run: (id: string, resume = false, force = false) =>
