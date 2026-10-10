@@ -73,6 +73,35 @@ STATE_TRANSITIONS: dict[EvalState, set[EvalState]] = {
 TERMINAL_STATES = {EvalState.COMPLETED, EvalState.FAILED, EvalState.CANCELLED}
 REVIEWABLE_STATES = {EvalState.NEED_HUMAN, EvalState.DEGRADED}
 
+#: 各状态对应的进度百分比。
+#:
+#: 注意这是**由状态派生的离散值**，不是真实测量的完成度。
+#: 放在这里（而非 agent 模块）是为了让「人工裁定」等非 Agent 路径也能同步进度 ——
+#: 否则会出现「current_state=COMPLETED 但 progress 仍是 0.9」的数据不一致
+#: （实测签发后正是如此，界面上的进度条与状态互相矛盾）。
+STATE_PROGRESS: dict[EvalState, float] = {
+    EvalState.PENDING: 0.0,
+    EvalState.PLANNING: 0.15,
+    EvalState.RETRIEVING: 0.35,
+    EvalState.MATCHING: 0.55,
+    EvalState.ANALYZING: 0.75,
+    EvalState.REPORTING: 0.9,
+    EvalState.JUDGING: 0.95,
+    # NEED_HUMAN 取 0.9：Agent 已完成自评，尚待人工介入。
+    # ⚠️ 界面**不应**把它当作「进行中」显示进度条 —— 会被误读为「卡在 90%」。
+    # 前端对已停止状态改为显示「等待人工复核」等状态说明。
+    EvalState.NEED_HUMAN: 0.9,
+    EvalState.COMPLETED: 1.0,
+    EvalState.DEGRADED: 1.0,
+    EvalState.FAILED: 1.0,
+    EvalState.CANCELLED: 1.0,
+}
+
+
+def progress_of(state: EvalState) -> float:
+    """状态 → 进度。未知状态返回 0.0（不抛异常，避免影响主流程）。"""
+    return STATE_PROGRESS.get(state, 0.0)
+
 
 class Verdict(StrEnum):
     """条款匹配结论（FR-AGT-05）。"""

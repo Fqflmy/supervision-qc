@@ -37,6 +37,7 @@ from app.constants import (
     EvalState,
     HumanVerdict,
     ReviewStatus,
+    progress_of,
     review_status_of,
 )
 from app.core.errors import ConflictError, NotFoundError, ParamInvalidError
@@ -321,7 +322,13 @@ def decide(
 
 
 def _transition(task: EvalTask, target: EvalState) -> None:
-    """按状态迁移表置位，非法迁移直接拒绝（不静默改成别的状态）。"""
+    """按状态迁移表置位，非法迁移直接拒绝（不静默改成别的状态）。
+
+    同时同步 ``progress``：进度是**由状态派生**的（见 ``agent.runner._progress_of``），
+    而人工裁定也会改变状态 —— 若不同步，会出现
+    「current_state=COMPLETED 但 progress=0.9」这类数据不一致
+    （实测签发后正是如此：界面上的进度条与状态互相矛盾）。
+    """
     current = EvalState(task.current_state)
     if target is current:
         return
@@ -331,3 +338,4 @@ def _transition(task: EvalTask, target: EvalState) -> None:
             f"状态迁移非法：{current.value} -> {target.value}（允许：{sorted(s.value for s in allowed)}）"
         )
     task.current_state = target.value
+    task.progress = progress_of(target)

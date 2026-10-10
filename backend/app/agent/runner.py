@@ -768,21 +768,14 @@ async def _run_evaluation_core(
 
 
 def _progress_of(state: EvalState) -> float:
-    mapping = {
-        EvalState.PENDING: 0.0,
-        EvalState.PLANNING: 0.15,
-        EvalState.RETRIEVING: 0.35,
-        EvalState.MATCHING: 0.55,
-        EvalState.ANALYZING: 0.75,
-        EvalState.REPORTING: 0.9,
-        EvalState.JUDGING: 0.95,
-        EvalState.COMPLETED: 1.0,
-        EvalState.DEGRADED: 1.0,
-        EvalState.NEED_HUMAN: 0.9,
-        EvalState.FAILED: 1.0,
-        EvalState.CANCELLED: 1.0,
-    }
-    return mapping.get(state, 0.0)
+    """状态 → 进度（委托 ``constants.progress_of``，保持单一实现来源）。
+
+    进度映射放在 constants 是为了让人工裁定等非 Agent 路径也能同步 ——
+    否则签发后会出现「COMPLETED 但 progress=0.9」的不一致。
+    """
+    from app.constants import progress_of
+
+    return progress_of(state)
 
 
 async def run_evaluation_async(task_id: uuid.UUID, *, resume: bool = False) -> None:

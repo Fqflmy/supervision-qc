@@ -174,6 +174,108 @@ def test_task_list_with_judge_null_when_never_judged(client, requires_db):
 
 
 # --------------------------------------------------------------------------- #
+# 进度与状态必须一致
+# --------------------------------------------------------------------------- #
+def test_progress_matches_state_mapping():
+    """`progress` 应由状态派生，两处实现必须一致（已统一到 constants）。"""
+    from app.agent.runner import _progress_of
+    from app.constants import EvalState, progress_of
+
+    for state in EvalState:
+        assert _progress_of(state) == progress_of(state), (
+            f"{state.value} 的进度在两处实现中不一致"
+        )
+
+
+def test_signoff_updates_progress(client, requires_db):
+    """人工裁定改变状态时必须同步 ``progress``。
+
+    缺陷背景：``progress`` 原先只在 Agent 执行路径写入，人工裁定
+    （NEED_HUMAN → COMPLETED）不同步它，于是留下
+    「current_state=COMPLETED 但 progress=0.9」的矛盾数据 ——
+    界面上进度条显示 90%，与「已完成」徽标互相打架。
+    """
+    from app.constants import EvalState, progress_of
+    from app.db.models import EvalTask
+    from app.db.session import session_scope
+
+    project_id, task_id = _seed_task_with_report("NEED_HUMAN")
+    _ensure_user("lbl_expert", "expert", project_id)
+    headers = _login(client, "lbl_expert")
+
+    def progress_now() -> float:
+        with session_scope() as session:
+            return float(session.get(EvalTask, uuid.UUID(task_id)).progress or 0.0)
+
+    # 前置：待复核状态对应 0.9
+    assert abs(progress_now() - progress_of(EvalState.NEED_HUMAN)) < 1e-6
+
+    signed = client.post(
+        f"/api/v1/eval/tasks/{task_id}/review",
+        headers=headers,
+        json={"verdict": "qualified", "comment": "签发"},
+    )
+    assert signed.status_code == 200, signed.text
+
+    with session_scope() as session:
+        task = session.get(EvalTask, uuid.UUID(task_id))
+        assert task.current_state == "COMPLETED"
+        assert abs(float(task.progress) - progress_of(EvalState.COMPLETED)) < 1e-6, (
+            f"签发后 progress 未同步：state={task.current_state} progress={task.progress}"
+        )
+
+
+def test_reject_with_rerun_resets_progress(client, requires_db):
+    """驳回重跑回到 MATCHING，进度应随之回退（不能停留在 0.9）。
+
+    ⚠️ 必须屏蔽后台重跑：``/review`` 在 ``rerun=true`` 时会调度后台执行，
+    TestClient 会同步跑完整个 Agent，任务随即被重新收敛到终态 ——
+    那样断言的就成了「重跑后的结果」，而非「刚驳回时的状态」。
+    本用例只验证**状态迁移与进度同步**，因此让 Agent 执行直接抛错。
+    """
+    from app.constants import EvalState, progress_of
+    from app.db.models import EvalTask
+    from app.db.session import session_scope
+
+    project_id, task_id = _seed_task_with_report("NEED_HUMAN")
+    _ensure_user("lbl_expert", "expert", project_id)
+    headers = _login(client, "lbl_expert")
+
+    import app.api.routes.eval as eval_routes
+
+    async def _noop(*args, **kwargs):
+        """什么都不做：既不改状态也不抛错。
+
+        抛错也不行 —— 路由的异常处理会把状态收敛成 FAILED，
+        同样看不到「刚驳回时的 MATCHING」。
+        """
+        return None
+
+    original = eval_routes.run_evaluation
+    eval_routes.run_evaluation = _noop
+    try:
+        response = client.post(
+            f"/api/v1/eval/tasks/{task_id}/review",
+            headers=headers,
+            json={"verdict": "unqualified", "comment": "驳回重跑", "rerun": True},
+        )
+        assert response.status_code == 200, response.text
+        # 接口响应本身应反映「已回到 MATCHING」
+        assert response.json()["data"]["current_state"] == "MATCHING"
+
+        with session_scope() as session:
+            task = session.get(EvalTask, uuid.UUID(task_id))
+            assert task.current_state == "MATCHING", (
+                f"驳回后状态应为 MATCHING，实际 {task.current_state}"
+            )
+            assert abs(float(task.progress) - progress_of(EvalState.MATCHING)) < 1e-6, (
+                f"驳回后 progress 未回退：{task.progress}"
+            )
+    finally:
+        eval_routes.run_evaluation = original
+
+
+# --------------------------------------------------------------------------- #
 # 2) 重跑必须清除上一次人工裁定
 # --------------------------------------------------------------------------- #
 def test_rerun_clears_previous_human_verdict(client, requires_db):
@@ -319,6 +421,7 @@ def _ensure_user(username: str, role: str, project_id: int | None = None) -> Non
 
 
 def _seed_task_with_report(state: str = "NEED_HUMAN", *, overall_verdict: str = "qualified"):
+    from app.constants import EvalState, progress_of
     from app.db.models import EvalReport, EvalTask, Project, User
     from app.db.session import session_scope
 
@@ -338,6 +441,9 @@ def _seed_task_with_report(state: str = "NEED_HUMAN", *, overall_verdict: str = 
             current_state=state,
             iteration_count=3,
             version=1,
+            # 夹具也必须自洽：progress 是 current_state 的派生值，
+            # 造数据时若随手写 0.0 会与状态矛盾（后端已改为派生，这里保持一致）
+            progress=progress_of(EvalState(state)),
         )
         session.add(task)
         session.flush()

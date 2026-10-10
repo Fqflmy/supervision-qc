@@ -25,6 +25,7 @@ from app.constants import (
     REVIEWABLE_STATES,
     ReviewStatus,
     overall_verdict_label,
+    progress_of,
     review_status_of,
 )
 from app.core.errors import ConflictError, ForbiddenError, NotFoundError
@@ -65,7 +66,13 @@ def _task_out(task: EvalTask) -> dict:
         "current_step": task.current_step,
         "iteration_count": task.iteration_count,
         "no_progress_rounds": task.no_progress_rounds,
-        "progress": task.progress,
+        # 进度**由状态派生**，不读库中存储值。
+        #
+        # 为什么：progress 是 current_state 的纯函数（constants.progress_of），
+        # 存两份必然漂移 —— 实测签发后出现「COMPLETED 但 progress=0.9」，
+        # 界面上进度条与状态徽标互相矛盾。改为派生后，这一整类不一致不可能再发生
+        # （数据库列保留仅为兼容历史数据，不再作为读取来源）。
+        "progress": _progress_value(task.current_state),
         "total_tokens": task.total_tokens,
         "guard_reason": task.guard_reason,
         "started_at": task.started_at,
@@ -75,6 +82,14 @@ def _task_out(task: EvalTask) -> dict:
         # 列表缺这个字段会导致「列表内裁定」拿不到 expected_version（无法防并发）。
         "version": int(task.version),
     }
+
+
+def _progress_value(state: str) -> float:
+    """状态 → 进度。取值非法时返回 0.0（展示层不应因此报错）。"""
+    try:
+        return progress_of(EvalState(state))
+    except ValueError:
+        return 0.0
 
 
 @router.post("/tasks", summary="创建评估任务（API-12）")

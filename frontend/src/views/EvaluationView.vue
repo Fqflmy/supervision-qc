@@ -49,10 +49,16 @@
             <span v-else class="muted small">-</span>
           </template>
         </el-table-column>
-        <el-table-column label="进度" width="140">
+        <!-- 进度只对「进行中」状态有意义。
+             NEED_HUMAN / COMPLETED 等状态下 Agent 已停止，此时显示固定的 90%/100%
+             会让人误以为「卡在 90%」—— 因此改为显示状态说明。 -->
+        <el-table-column label="进度" width="150">
           <template #default="{ row }">
-            <el-progress :percentage="Math.round((row.progress ?? 0) * 100)" :stroke-width="8" />
-            <span class="small muted mono">{{ Math.round((row.progress ?? 0) * 100) }}%</span>
+            <template v-if="isInFlight(row.current_state)">
+              <el-progress :percentage="Math.round((row.progress ?? 0) * 100)" :stroke-width="8" />
+              <span class="small muted mono">{{ Math.round((row.progress ?? 0) * 100) }}%</span>
+            </template>
+            <span v-else class="small muted">{{ progressNote(row.current_state) }}</span>
           </template>
         </el-table-column>
         <el-table-column label="迭代 / 无进展" width="120" align="center">
@@ -238,6 +244,48 @@ const roleHintDesc = computed(() => {
   }
   return '如需发起评估，请联系管理员为你的账号分配「监理工程师」角色。'
 })
+
+/**
+ * Agent 是否**正在执行**。
+ *
+ * 进度百分比是由状态反推的离散值（见后端 `_progress_of`），
+ * 对已停止的状态没有意义：
+ * - `NEED_HUMAN` 被赋 0.9，看起来像「卡在 90%」，实际是 Agent 已跑完、在等人；
+ * - `COMPLETED` 被赋 1.0，但之所以完成可能只是因为结论正面，未必代表复核完毕。
+ *
+ * 因此只在真正执行中的状态显示进度条，其余显示状态说明。
+ */
+const IN_FLIGHT_STATES = [
+  'PENDING',
+  'PLANNING',
+  'RETRIEVING',
+  'MATCHING',
+  'ANALYZING',
+  'REPORTING',
+  'JUDGING',
+]
+
+function isInFlight(state?: string | null): boolean {
+  return IN_FLIGHT_STATES.includes(state ?? '')
+}
+
+/** 非执行中状态下的进度列说明文字 */
+function progressNote(state?: string | null): string {
+  switch (state) {
+    case 'NEED_HUMAN':
+      return '等待人工复核'
+    case 'DEGRADED':
+      return '降级完成（待复核）'
+    case 'COMPLETED':
+      return '已完成'
+    case 'FAILED':
+      return '执行失败'
+    case 'CANCELLED':
+      return '已取消'
+    default:
+      return '-'
+  }
+}
 
 const kbs = ref<KnowledgeBase[]>([])
 /** 当前用户被授权的项目（创建任务时选择，决定数据隔离归属） */

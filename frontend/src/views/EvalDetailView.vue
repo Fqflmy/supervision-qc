@@ -36,8 +36,14 @@
         <el-descriptions-item label="Token 消耗">
           <span class="mono">{{ (detail?.total_tokens ?? 0).toLocaleString() }}</span>
         </el-descriptions-item>
+        <!-- 进度只对「进行中」状态有意义；NEED_HUMAN 被赋 90% 会让人误以为卡住了 -->
         <el-descriptions-item label="进度">
-          <el-progress :percentage="Math.round((detail?.progress ?? 0) * 100)" :stroke-width="8" />
+          <el-progress
+            v-if="isInFlight(detail?.current_state)"
+            :percentage="Math.round((detail?.progress ?? 0) * 100)"
+            :stroke-width="8"
+          />
+          <span v-else class="muted small">{{ progressNote(detail?.current_state) }}</span>
         </el-descriptions-item>
       </el-descriptions>
 
@@ -508,6 +514,44 @@ const diverged = computed(() => {
 const canReviewAction = computed(
   () => ['NEED_HUMAN', 'DEGRADED'].includes(detail.value?.current_state ?? '') && auth.canReview,
 )
+
+/**
+ * Agent 是否**正在执行**。
+ *
+ * `progress` 是由状态反推的离散值（后端 `_progress_of`），对已停止的状态没有意义：
+ * `NEED_HUMAN` 被赋 0.9，界面显示「90%」会让人误以为任务卡住，
+ * 实际是 Agent 已跑完、正等待人工复核。因此只在执行中显示进度条。
+ */
+const IN_FLIGHT_STATES = [
+  'PENDING',
+  'PLANNING',
+  'RETRIEVING',
+  'MATCHING',
+  'ANALYZING',
+  'REPORTING',
+  'JUDGING',
+]
+
+function isInFlight(state?: string | null): boolean {
+  return IN_FLIGHT_STATES.includes(state ?? '')
+}
+
+function progressNote(state?: string | null): string {
+  switch (state) {
+    case 'NEED_HUMAN':
+      return '等待人工复核'
+    case 'DEGRADED':
+      return '降级完成（待复核）'
+    case 'COMPLETED':
+      return '已完成'
+    case 'FAILED':
+      return '执行失败'
+    case 'CANCELLED':
+      return '已取消'
+    default:
+      return '-'
+  }
+}
 
 /** 加载人工裁定状态（未裁定时接口也返回 pending，不报错） */
 async function loadReview() {
