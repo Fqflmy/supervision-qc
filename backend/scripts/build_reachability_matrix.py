@@ -36,12 +36,14 @@ ARTIFACTS = ROOT / "var" / "artifacts"
 DOC = ROOT / "docs" / "角色可达性矩阵.md"
 
 #: 角色 → (登录卡片文案, 角色码, 期望落地页, 期望菜单数)
+#: 菜单数含**个人中心** —— 它无权限点、所有角色可见，且是「强制改密」时
+#: 路由守卫唯一放行的目标。各角色比加入它之前各 +1。
 ROLES = [
-    ("系统管理员", "admin", "/users", 9),
-    ("知识库管理员", "kb_manager", "/knowledge", 4),
-    ("监理工程师", "engineer", "/evaluation", 5),
-    ("审核人员", "expert", "/judge", 4),
-    ("普通用户", "viewer", "/reports", 3),
+    ("系统管理员", "admin", "/users", 10),
+    ("知识库管理员", "kb_manager", "/knowledge", 5),
+    ("监理工程师", "engineer", "/evaluation", 6),
+    ("审核人员", "expert", "/judge", 5),
+    ("普通用户", "viewer", "/reports", 4),
 ]
 
 #: 页面 → (路由名, 标题, 必须存在的 DOM 选择器, 可选文本关键词)
@@ -56,6 +58,9 @@ PAGES = [
     ("judge", "质量评审", ".metric", []),
     ("users", "用户与授权", ".el-table", []),
     ("system", "系统与审计", ".el-tabs, .el-table", []),
+    # 个人中心：**所有角色可见**（无权限点），且是「强制改密」时唯一放行的目标。
+    # 必须纳入矩阵：若它哪天被加了权限限制，被要求改密的用户会无处可去（死锁）。
+    ("profile", "个人中心", ".id-card, .el-descriptions", []),
 ]
 
 
@@ -257,7 +262,7 @@ def main() -> int:
     print(f"=== 已生成 {DOC} ===")
 
     problems: list[str] = []
-    for label, _, _, _ in ROLES:
+    for label, _role, _home, expect_menus in ROLES:
         for name, title, _, _ in PAGES:
             menu_visible, direct_ok, content_ok = matrix[label][name]
             if direct_ok and not content_ok:
@@ -266,6 +271,15 @@ def main() -> int:
                 problems.append(f"{label} · {title} —— 菜单可见但被守卫拦回")
         if not home_ok_map[label]:
             problems.append(f"{label} —— 落地页不正确")
+        # 菜单数必须校验：此前它只写进文档、没有任何断言，
+        # 于是新增菜单（个人中心）后「期望 3 / 实测 4」这种不一致**不会被发现** ——
+        # 文档写着旧数字，看起来却一切正常。
+        actual = menu_count_map[label]
+        if actual != expect_menus:
+            problems.append(
+                f"{label} —— 菜单数不符：期望 {expect_menus}、实测 {actual}"
+                "（新增/删除菜单后需同步 ROLES 的期望值）"
+            )
 
     print()
     if problems:
@@ -273,7 +287,7 @@ def main() -> int:
         for p in problems:
             print(f"  {p}")
         return 1
-    print("[OK] 菜单可见性与实际可达性一致，无空壳页面，落地页正确")
+    print("[OK] 菜单可见性与实际可达性一致，无空壳页面，落地页与菜单数均正确")
     return 0
 
 

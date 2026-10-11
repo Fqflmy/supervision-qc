@@ -184,11 +184,11 @@ Write-Host '  停止服务   .\start.ps1 -Down' -ForegroundColor Gray
 按 UTF-8 完全正确，但按 GBK 解成 Write-Host '  鍋滄㈡湇鍔�   ... ——
 中间凭空多出一个 '，字符串在此结束，**从这一行往后整个脚本语法崩坏**。
 
-**CI 已守住这条契约**（ackend/scripts/check_script_encoding.py）：
+**CI 已守住这条契约**（`backend/scripts/check_script_encoding.py`）：
 
-`ash
+```bash
 python backend/scripts/check_script_encoding.py   # 提交前自查
-`
+```
 
 > .gitattributes 已声明 *.ps1 / *.bat 为 eol=crlf。
 > 但 **BOM 不在 .gitattributes 的管理范围**，只能靠脚本检查 +
@@ -321,6 +321,7 @@ npm run dev
 | `& $py scripts\audit_pdf_download_ui.py` | **报告 PDF 下载**（按钮可用；正确处理「真实字节」与「被下载管理器接管」两种结局） | 通过（8 项） |
 | `& docker exec supervision-api python scripts\verify_pdf_export.py` | **PDF 导出接口**（内容/中文/签发状态/权限隔离/审计留痕） | 通过（15 项） |
 | `& $py scripts\check_script_encoding.py` | **启动脚本编码契约**（.ps1/.bat 的 BOM 与 CRLF；.sh 不得有 BOM） | 通过（7 文件） |
+| `& $py scripts\audit_ui_semantics.py` | **界面语义走查**（检测器自检 + 状态标签歧义/空状态指引/错误提示/字段重名） | 通过（自检 13 项 + 0 硬失败） |
 | `& $py scripts\check_schema.py` | **结构自查**（判定全新库 / 存量库未纳管 / 已纳管） | 通过 |
 | `& $py scripts\shot_roles.py` | **逐角色界面截图**（核验菜单集合与落地页） | 通过（4 角色） |
 | `& $py -m pytest tests\test_metrics_endpoint.py` | **指标端点与抓取鉴权**（Prometheus 文本格式） | 通过（20 项） |
@@ -503,6 +504,7 @@ docker compose exec -T api python /app/scripts/fix_checkpoint_locks.py --fix    
 | `docs/角色可达性矩阵.md` | **可达性矩阵**：逐角色实测「从落地页能到达哪些功能」，含隐藏页入口与界面可用性说明 |
 | `docs/术语规范.md` | **术语规范（强制口径）**：三层结论的命名与对象、禁止用语对照表、Judge 评分与评估结论的区别 |
 | `docs/复核结论语义整改方案.md` | **术语整改方案**：问题定性（数据模型语义缺失）、整改原则、验收标准 |
+| `docs/界面语义走查报告.md` | **界面语义走查**：以各角色视角检查状态标签歧义/空状态指引/错误提示/字段重名，含**检测器自检**与**局限声明** |
 | `docs/修改建议-第二轮.md` | **修改建议（现行）**：2 个 P0（工程师发不起评估、复核接口越权）、3 个 P1、5 个 P2，含实施顺序与工作量 |
 | `docs/人工复核整改方案.md` | **人工复核整改**：补齐「合格/不合格裁定」与「终审签发」（SRS 要求但实现缺失），含数据模型、接口、界面、迁移与决策点 |
 | `docs/评估操作示例.md` | **评估操作示例**：一个从发起到签发、可照做的完整例子（含实测数字与预期结果） |
