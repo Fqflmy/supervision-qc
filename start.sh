@@ -10,7 +10,10 @@
 #   ./start.sh --build                强制重新构建镜像
 #   ./start.sh --down                 停止所有服务
 #
-# 端口：Web http://localhost:8080   API http://localhost:8000/api/v1/docs
+# 端口：Web http://localhost:8080（接口文档 http://localhost:8080/api/v1/docs）
+#       ⚠️ 全栈模式**不映射 api 的 8000 端口** —— 后端只经 web 的 nginx 反向代理
+#       暴露 /api（最小暴露面）。仅 --mode infra 才把数据层端口映射到宿主机。
+#       如需直连 api 的 8000（例如本机调试后端），请改用 start-local.sh 系列。
 
 set -euo pipefail
 
@@ -222,8 +225,14 @@ fi
 # 6. 汇总
 # --------------------------------------------------------------------------- #
 step '启动完成'
-printf '  管理后台    http://localhost:8080\n'
-printf '  接口文档    http://localhost:8000/api/v1/docs\n'
-printf '  Neo4j 浏览器 http://localhost:7476\n'
+# ⚠️ 全栈模式**不映射 api 的 8000 端口**（最小暴露面），
+# 接口文档必须经 web 的 nginx 反向代理访问 —— 这里印 8000 会给出一个打不开的地址。
+printf '  管理后台    http://localhost:%s\n' "${WEB_PORT:-8080}"
+printf '  接口文档    http://localhost:%s/api/v1/docs\n' "${WEB_PORT:-8080}"
+printf '  监控指标    http://localhost:${PROMETHEUS_PORT:-9090}\n'
+printf '  监控面板    http://localhost:${GRAFANA_PORT:-3000}  （admin / 见 deploy/.env 的 GRAFANA_PASSWORD）\n'
 printf '  登录账号    admin / Admin@12345\n'
+printf '\n  说明：全栈模式只对外暴露 web / Prometheus / Grafana；\n'
+printf '        api、PostgreSQL、Neo4j、Redis、MinIO 仅在集群内网可达（最小暴露面）。\n'
+printf '        需要直连数据库/Neo4j 做本机开发时，改用：./start.sh --mode infra\n'
 printf '\n  查看状态    docker compose ps\n  查看日志    docker compose logs -f api\n  停止服务    ./start.sh --down\n'
